@@ -4,22 +4,44 @@ ns.ledgers = {}
 ns.warnings = {}
 
 local DEFAULTS = {
-	officerRank = 1, -- guild ranks from 0 (guild master) to this one count as officers (open question 6)
 	rollTime = 30,
 	rerollTime = 20,
 	minQuality = 4, -- epic
 	announce = true,
+	raidWarning = true, -- headlines as raid warnings, when the writer is leader or an assistant
 	autoShow = true,
+	pityByBoss = false, -- group My pity by boss inside each raid
+	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
+	collapsed = {}, -- My pity groups the player has collapsed
 }
+ns.DEFAULTS = DEFAULTS
+
+-- Events too frequent or uninteresting to capture; addon messages are captured decoded, in Comm.lua.
+local UNCAPTURED = { CHAT_MSG_ADDON = true, GET_ITEM_INFO_RECEIVED = true }
+
+-- Errors keep the stack they happened on, and go to the capture as well as the error handler.
+local function WithStack(err)
+	return tostring(err) .. (debugstack and ("\n" .. debugstack(2)) or "")
+end
+
+-- Records what happens for the test capture; does nothing unless Capture.lua (temporary) replaces it.
+function ns.Capture(...) end
+
+function ns.ReportError(where, err)
+	if ns.Capture then ns.Capture("error", where, err) end
+	geterrorhandler()(err)
+end
 
 local events = {}
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(_, event, ...)
+	if ns.Capture and not UNCAPTURED[event] then ns.Capture("event", event, ...) end
 	for _, handler in ipairs(events[event]) do
-		local ok, err = pcall(handler, ...)
-		if not ok then geterrorhandler()(err) end
+		local ok, err = xpcall(handler, WithStack, ...)
+		if not ok then ns.ReportError(event, err) end
 	end
 end)
+ns.WithStack = WithStack
 
 -- Calls handler(...) on every `event`. Any number of modules can listen to the same event.
 function ns.On(event, handler)
@@ -48,6 +70,7 @@ end
 
 -- Something a player should look at: a result that doesn't match what they saw, or a ledger that differs (6.3).
 function ns.Warn(text)
+	if ns.Capture then ns.Capture("warning", text) end
 	table.insert(ns.warnings, { time = GetServerTime(), text = text })
 	DEFAULT_CHAT_FRAME:AddMessage("|cffc69b6dPitiful Loot|r: |cffff4040" .. text .. "|r")
 	ns.Fire("WARNINGS")
@@ -70,16 +93,24 @@ function ns.IsMe(name)
 	return ns.SameName(name, ns.PlayerName())
 end
 
+---@class PitifulLootGlobal
+---@field ledgers table<string, table[]> each guild's saved ledger entries
+---@field names table<string, string> names by GUID, for players who aren't online
+---@field classes table<string, string> class file names by GUID, to colour those names
+---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
+---@field testMode boolean?
+
 -- Ledgers and names are account-wide; settings are per profile.
 ns.On("ADDON_LOADED", function(name)
 	if name ~= addonName then return end
-	local db = LibStub("AceDB-3.0"):New("PitifulLootDB", { global = { ledgers = {}, names = {} }, profile = DEFAULTS }, true)
+	local db = LibStub("AceDB-3.0"):New("PitifulLootDB",
+		{ global = { ledgers = {}, names = {}, classes = {}, testOfficers = {} }, profile = DEFAULTS }, true)
 	local function UseProfile() ns.settings = db.profile end
 	db.RegisterCallback(ns, "OnProfileChanged", UseProfile)
 	db.RegisterCallback(ns, "OnProfileCopied", UseProfile)
 	db.RegisterCallback(ns, "OnProfileReset", UseProfile)
 	ns.database = db
-	ns.db = db.global
+	ns.saved = db.global --[[@as PitifulLootGlobal]]
 	UseProfile()
 end)
 
@@ -87,11 +118,11 @@ end)
 -- nothing is lost, and the ledger stops before that entry with loadError set.
 function ns.GetLedger(guild)
 	if not ns.ledgers[guild] then
-		local ledger, bad, err = ns.LoadLedger(ns.db.ledgers[guild])
+		local ledger, bad, err = ns.LoadLedger(ns.saved.ledgers[guild])
 		if err then
 			ledger.loadError = string.format("entry %d: %s", bad, err)
 		else
-			ns.db.ledgers[guild] = ledger.entries
+			ns.saved.ledgers[guild] = ledger.entries
 		end
 		ns.ledgers[guild] = ledger
 	end
@@ -100,16 +131,27 @@ end
 
 -- Swaps in a ledger fetched from an officer with /pl resync.
 function ns.ReplaceLedger(ledger)
-	ns.db.ledgers[ns.guild] = ledger.entries
+	ns.saved.ledgers[ns.guild] = ledger.entries
 	ns.ledgers[ns.guild] = ledger
 	ns.ledger = ledger
 	ns.Fire("LEDGER_CHANGED")
 end
 
+-- Test mode (TestCommands.lua, temporary) keeps its own ledger, so nothing done in it reaches the guild's.
+function ns.IsTestMode()
+	return ns.saved ~= nil and ns.saved.testMode == true
+end
+
+-- Test mode can show the window as a member without officer powers sees it; it doesn't change what the addon does.
+function ns.ViewAsMember()
+	return ns.IsTestMode() and ns.saved.testViewAsMember == true
+end
+
 -- The ledger in use is the current guild's, once the client knows which guild that is.
 local function UpdateGuild()
-	if not ns.db then return end
+	if not ns.saved then return end
 	local guild = IsInGuild() and GetGuildInfo("player") or nil
+	if ns.IsTestMode() then guild = (guild or "No guild") .. " [test]" end
 	if guild == ns.guild then return end
 	ns.guild = guild
 	ns.ledger = guild and ns.GetLedger(guild) or nil
@@ -119,6 +161,7 @@ local function UpdateGuild()
 	ns.Fire("LEDGER_READY")
 	ns.Fire("LEDGER_CHANGED")
 end
+ns.UpdateGuild = UpdateGuild
 
 ns.On("PLAYER_LOGIN", function()
 	if IsInGuild() then C_GuildInfo.GuildRoster() end

@@ -2,16 +2,17 @@ local _, ns = ...
 
 local HELP = {
 	"/pl - show or hide the window",
+	"/pl options - open the settings",
 	"/pl writer - run loot rolls for this group (officers)",
 	"/pl roll <item> [copies] [greed] - start a roll",
 	"/pl close | cancel | award - end the current round, drop the roll, or record and hand out the item",
 	"/pl os <name> - flip a roll's off-spec flag before the first round closes",
 	"/pl pity [name] - list pity",
-	"/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild (officers)",
+	"/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild by hand (officers)",
 	"/pl adjust <name> <item> <pity> [unlock] - correct pity, or lift a lockout (officers)",
 	"/pl resync <officer> - replace your ledger with an officer's",
 	"/pl status - ledger revision, writer and warnings",
-	"/pl officerrank <n> - the lowest guild rank that counts as an officer (0 is the guild master)",
+	"/pl test - commands for trying the addon out in game (temporary)",
 }
 
 -- Splits arguments, keeping an item link (which has spaces in its name) as one.
@@ -63,6 +64,7 @@ local function ShowPity(name)
 end
 
 local commands = {}
+ns.commands = commands -- TestCommands.lua adds /pl test
 
 function commands.writer() ns.ClaimWriter() end
 function commands.close() ns.CloseRound() end
@@ -71,6 +73,7 @@ function commands.award() ns.Award() end
 function commands.pity(args) ShowPity(args[2]) end
 function commands.resync(args) ns.Resync(args[2]) end
 function commands.help() for _, line in ipairs(HELP) do ns.Print(line) end end
+function commands.options() ns.OpenOptions() end
 
 function commands.roll(args)
 	local item = ns.ItemID(args[2])
@@ -101,12 +104,6 @@ function commands.adjust(args)
 	Record({ type = "adjust", id = guid, item = item, pity = pity, unlock = args[5] == "unlock" or nil })
 end
 
-function commands.officerrank(args)
-	local rank = tonumber(args[2])
-	if rank then ns.settings.officerRank = rank end
-	ns.Print(("Guild ranks 0 to %d count as officers."):format(ns.settings.officerRank))
-end
-
 function commands.status()
 	if ns.ledger then
 		local rev, head = ns.ledger:Revision()
@@ -121,6 +118,7 @@ end
 SLASH_PITIFULLOOT1 = "/pl"
 SLASH_PITIFULLOOT2 = "/pitifulloot"
 SlashCmdList.PITIFULLOOT = function(text)
+	ns.Capture("command", text)
 	local args = Args(text or "")
 	local command = args[1] and commands[args[1]:lower()]
 	if command then

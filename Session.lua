@@ -5,7 +5,7 @@ local _, ns = ...
 -- copy of the ledger (6.1). Messages on the live prefix, all from the writer except query:
 --
 --   writer  {}                                       an officer claiming the writer role
---   open    {sid, item, copies, greed, opened, secs} a roll starts
+--   open    {sid, item, copies, greed, opened, secs, instance, boss} a roll starts (and where the item dropped)
 --   rolls   {sid, round, list}                       rolls counted ({id, name, roll, pity, os}) or refused ({name, roll, why})
 --   os      {sid, id, os}                            the writer corrected an off-spec flag
 --   reroll  {sid, round, ids, slots, winners, secs}  a tie that needs rolling off
@@ -18,6 +18,7 @@ local _, ns = ...
 local LIVE = ns.PREFIX_LIVE
 local FLUSH_DELAY = 0.5
 local LATE_GRACE = 10 -- seconds after a roll is decided that late /rolls are still answered with a refusal
+local ROLL_LOCK = 3 -- rerolls in a row after which the raid hears the players are roll-locked
 
 local live = { observed = {} }
 ns.live = live
@@ -37,12 +38,34 @@ local function SendLive(kind, data, target)
 	ns.Send(LIVE, kind, data, target and "WHISPER" or GroupChannel(), target)
 end
 
-local function Announce(text)
-	if ns.settings.announce and IsInGroup() then
-		ChatThrottleLib:SendChatMessage("NORMAL", ns.PREFIX_LIVE, "Pitiful Loot: " .. text, GroupChannel())
-	else
-		ns.Print(text)
+-- Announcements go to raid chat (party chat in a party), never /say, so everyone in the group sees them with or
+-- without the addon. Headlines (a roll starting, a tie, the result) are raid warnings when the writer is allowed to
+-- send them, so nobody misses a roll.
+local CHANNEL_LABELS = { PARTY = "Party", RAID = "Raid", RAID_WARNING = "Raid Warning" }
+
+-- Test mode on your own (TestCommands.lua, temporary): shows what the raid would see, as if you led it. Each line
+-- goes in your chat in its channel's colour, and headlines also appear in the middle of the screen like raid warnings.
+local function Preview(text, channel)
+	local line = ("[%s] %s: %s"):format(CHANNEL_LABELS[channel], ns.PlayerName(), text)
+	local color = C_ChatInfo.GetColorForChatType and C_ChatInfo.GetColorForChatType(channel)
+	if color then line = ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, line) end
+	DEFAULT_CHAT_FRAME:AddMessage(line)
+	if channel == "RAID_WARNING" and RaidWarningUtil and ChatTypeInfo then
+		RaidWarningUtil.AddMessage(text, ChatTypeInfo.RAID_WARNING)
 	end
+end
+
+local function Announce(text, headline)
+	local grouped = IsInGroup()
+	if not ns.settings.announce or not (grouped or ns.IsTestMode()) then return ns.Print(text) end
+	text = text:gsub("^%l", string.upper)
+	local channel = grouped and GroupChannel() or "RAID"
+	local canWarn = not grouped
+		or IsInRaid() and (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player") or IsEveryoneAssistant())
+	if headline and ns.settings.raidWarning and canWarn then channel = "RAID_WARNING" end
+	ns.Capture("announce", channel, text)
+	if not grouped then return Preview(text, channel) end
+	ChatThrottleLib:SendChatMessage("NORMAL", ns.PREFIX_LIVE, text, channel)
 end
 
 function ns.AmWriter()
@@ -204,7 +227,8 @@ end
 function Mirror.open(d)
 	live.mirror = {
 		sid = d.sid, item = d.item, copies = d.copies, greed = d.greed, opened = d.opened,
-		state = "open", round = 1, ends = GetTime() + d.secs,
+		instance = type(d.instance) == "string" and d.instance or nil, boss = type(d.boss) == "string" and d.boss or nil,
+		state = "open", round = 1, ends = GetTime() + d.secs, duration = d.secs,
 		entrants = {}, rounds = { {} }, winners = {}, rejects = {},
 	}
 	live.observed = {}
@@ -248,7 +272,8 @@ function Valid.reroll(d)
 end
 function Mirror.reroll(d, m)
 	VerifyRound(m, m.round)
-	m.state, m.round, m.slots, m.ends = "reroll", d.round, d.slots, GetTime() + d.secs
+	m.openOdds = m.openOdds or m.odds -- what everyone's chances were before the tie, kept for those out of the reroll
+	m.state, m.round, m.slots, m.ends, m.duration = "reroll", d.round, d.slots, GetTime() + d.secs, d.secs
 	m.winners = type(d.winners) == "table" and d.winners or {}
 	m.contenders = {}
 	for _, id in ipairs(d.ids) do m.contenders[id] = true end
@@ -279,8 +304,13 @@ function Mirror.awarded(d, m)
 end
 
 local function Changed(kind)
-	if kind == "open" and ns.settings.autoShow and ns.ShowWindow then ns.ShowWindow() end
 	RefreshOdds()
+	-- A roll you can take part in (or are running) opens the window on the Roll tab.
+	if (kind == "open" or kind == "reroll") and ns.settings.autoShow and ns.ShowWindow
+		and (ns.CanRoll() or (kind == "open" and ns.AmWriter())) then
+		ns.ShowWindow("session")
+	end
+	ns.Fire("ROLL_EVENT", kind, live.mirror)
 	ns.Fire("SESSION_CHANGED")
 end
 
@@ -303,6 +333,7 @@ end
 
 -- Applies a writer's message to its own mirror, then sends it. Rolls are batched; anything else sends them first.
 local function Emit(kind, data)
+	ns.Capture("emit", kind, data)
 	Flush()
 	Mirror[kind](data, live.mirror)
 	Changed(kind)
@@ -339,6 +370,15 @@ local function ScheduleClose(secs)
 	end)
 end
 
+-- A reroll ends as soon as every tied player has rolled again.
+local function CloseIfAllRerolled(m)
+	if m.state ~= "reroll" then return end
+	for contender in pairs(m.contenders) do
+		if not (m.rounds[m.round] and m.rounds[m.round][contender]) then return end
+	end
+	ns.CloseRound()
+end
+
 -- A /roll seen by the writer: counted, or refused with a reason everyone can see.
 local function WriterRoll(name, roll, low, high)
 	local m = live.mirror
@@ -364,6 +404,7 @@ local function WriterRoll(name, roll, low, high)
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
 	if not ok then return Refuse(why) end
 	QueueRoll({ id = id, name = member.name, roll = roll, pity = pity, os = offSpec or nil, unknown = m.round == 1 and offSpec == nil or nil })
+	CloseIfAllRerolled(m)
 end
 
 -- Every /roll during a roll: the writer counts it, everyone else notes it to check the writer's result against.
@@ -384,7 +425,7 @@ end)
 
 -- Takes the writer role (6.2), and takes over a roll already in progress from the mirror.
 function ns.ClaimWriter()
-	if not IsInGroup() then return ns.Print("You need to be in a group.") end
+	if not IsInGroup() and not ns.IsTestMode() then return ns.Print("You need to be in a group.") end
 	if not ns.IsOfficer(ns.PlayerName()) then return ns.Print("Only officers can be the writer.") end
 	if not ns.ledger then return ns.Print("Your guild's ledger hasn't loaded yet.") end
 	live.writer = ns.PlayerName()
@@ -401,6 +442,25 @@ function ns.ClaimWriter()
 	ns.Fire("SESSION_CHANGED")
 end
 
+-- Where the item dropped: the raid (or dungeon) the writer is in, and the boss last killed there, if any. Recorded
+-- with the roll so pity can be grouped by raid and boss.
+local lastKill
+ns.On("ENCOUNTER_END", function(_, encounterName, _, _, success)
+	if success == 1 then lastKill = { boss = encounterName, instance = (GetInstanceInfo()) } end
+end)
+
+-- The boss last killed in the instance you're in, if any: who dropped the loot you're looking at.
+function ns.LastBoss()
+	local instance = GetInstanceInfo()
+	return lastKill and lastKill.instance == instance and lastKill.boss or nil
+end
+
+local function DropSource()
+	local name, instanceType = GetInstanceInfo()
+	if instanceType ~= "raid" and instanceType ~= "party" then return nil end
+	return name, lastKill and lastKill.instance == name and lastKill.boss or nil
+end
+
 function ns.StartRoll(item, copies, greed)
 	if not ns.AmWriter() then return ns.Print("Only the writer can start a roll. An officer becomes the writer with /pl writer.") end
 	if ns.SyncBusy() then return ns.Print("Wait until your ledger has finished syncing.") end
@@ -411,13 +471,15 @@ function ns.StartRoll(item, copies, greed)
 	copies = copies or 1
 	count = count + 1
 	local opened = GetServerTime()
+	local instance, boss = DropSource()
 	engine = ns.NewSession(item, copies, greed)
 	Emit("open", {
 		sid = ("%s:%d:%d"):format(ns.PlayerName(), opened, count),
 		item = item, copies = copies, greed = greed or nil, opened = opened, secs = ns.settings.rollTime,
+		instance = instance, boss = boss,
 	})
 	local what = copies > 1 and ("%s (%d copies)"):format(ns.ItemLink(item), copies) or ns.ItemLink(item)
-	Announce(("%sroll for %s: /roll now (%ds)."):format(greed and "greed " or "", what, ns.settings.rollTime))
+	Announce(("%sroll for %s: /roll now (%ds)."):format(greed and "greed " or "", what, ns.settings.rollTime), true)
 	ScheduleClose(ns.settings.rollTime)
 end
 
@@ -434,17 +496,24 @@ function ns.CloseRound()
 			sid = m.sid, round = #engine.rounds, ids = tied, slots = engine.slots,
 			winners = ns.Copy(engine.winners), secs = secs,
 		})
-		Announce(("tie for %s between %s: /roll again (%ds)."):format(ns.ItemLink(m.item), NameList(tied), secs))
+		-- Players with high pity can tie at 100 again and again; from the fourth reroll in a row, that's worth a cheer.
+		local rerolls = #engine.rounds - 1
+		if rerolls > ROLL_LOCK then
+			Announce(("roll-locked! Reroll %d for %s between %s: /roll again (%ds)."):format(rerolls, ns.ItemLink(m.item),
+				NameList(tied), secs), true)
+		else
+			Announce(("tie for %s between %s: /roll again (%ds)."):format(ns.ItemLink(m.item), NameList(tied), secs), true)
+		end
 		ScheduleClose(secs)
 		return
 	end
 	Emit("decided", { sid = m.sid, winners = ns.Copy(engine.winners) })
 	if not engine.winners[1] then
-		Announce(("no one rolled for %s."):format(ns.ItemLink(m.item)))
+		Announce(("no one rolled for %s."):format(ns.ItemLink(m.item)), true)
 		engine = nil
 		return
 	end
-	Announce(("%s goes to %s."):format(ns.ItemLink(m.item), NameList(engine.winners)))
+	Announce(("%s goes to %s."):format(ns.ItemLink(m.item), NameList(engine.winners)), true)
 	for _, id in ipairs(engine.winners) do Announce(Breakdown(m, id)) end
 end
 
@@ -456,6 +525,7 @@ function ns.Award()
 	end
 	local entry = engine:Record()
 	entry.time, entry.by, entry.sid = m.opened, ns.PlayerName(), m.sid
+	entry.instance, entry.boss = m.instance, m.boss
 	for id, entrant in pairs(entry.entrants) do entrant.name = m.entrants[id] and m.entrants[id].name end
 	local ok, err = ns.AppendEntry(entry)
 	if not ok then return ns.Warn("The award couldn't be recorded: " .. err .. ".") end
@@ -476,8 +546,40 @@ end
 function ns.ToggleOffSpec(id)
 	local m = live.mirror
 	if not ns.AmWriter() or not engine or not m or m.state ~= "open" or not m.entrants[id] then return end
+	if ns.ForEveryone(m.item) then return end -- nobody is off-spec for it
 	local offSpec = not m.entrants[id].offSpec
 	if engine:SetOffSpec(id, offSpec) then Emit("os", { sid = m.sid, id = id, os = offSpec or nil }) end
+end
+
+-- Whether this player can roll right now: a roll or their reroll is open, and they haven't rolled in it yet.
+function ns.CanRoll()
+	local m = live.mirror
+	if not IsActive(m) or m.rolledRound == m.round then return false end
+	local me = UnitGUID("player")
+	if m.rounds[m.round] and m.rounds[m.round][me] then return false end
+	if m.state == "reroll" then return m.contenders[me] == true end
+	if ns.ledger and ns.ledger.state:HasWon(me, m.item) then return false end
+	return ns.CanUse(me, m.item)
+end
+
+-- The window's roll button: a /roll 1-100, which the writer counts like any other.
+function ns.Roll()
+	if not ns.CanRoll() then return end
+	live.mirror.rolledRound = live.mirror.round
+	RandomRoll(ns.ROLL_MIN, ns.ROLL_MAX)
+	ns.Fire("SESSION_CHANGED")
+end
+
+-- For the test commands: counts a roll from a made-up player, as if the writer had seen their /roll.
+function ns.CountTestRoll(id, name, roll, pity, offSpec)
+	local m = live.mirror
+	if not ns.AmWriter() or not engine or not IsActive(m) then return false, "no roll is open" end
+	if m.round > 1 then pity = nil end
+	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
+	if not ok then return false, why end
+	QueueRoll({ id = id, name = name, roll = roll, pity = pity, os = offSpec or nil })
+	CloseIfAllRerolled(m)
+	return true
 end
 
 -- Handover and late joiners ---------------------------------------------------------------------------------------
@@ -496,7 +598,9 @@ ns.Receive(LIVE, "query", function(_, sender)
 	if not ns.AmWriter() then return end
 	local m = live.mirror and ns.Copy(live.mirror)
 	if m then m.odds, m.ends = nil, nil end
-	SendLive("state", { mirror = m, left = live.mirror and live.mirror.ends and live.mirror.ends - GetTime() }, sender)
+	SendLive("state", {
+		mirror = m, left = live.mirror and live.mirror.ends and live.mirror.ends - GetTime(), loot = ns.Copy(ns.loot),
+	}, sender)
 end)
 
 ns.Receive(LIVE, "state", function(d, sender)
@@ -508,11 +612,12 @@ ns.Receive(LIVE, "state", function(d, sender)
 		m.ends = type(d.left) == "number" and GetTime() + d.left or nil
 		live.mirror, live.observed = m, {}
 	end
+	ns.RestoreLoot(d.loot)
 	Changed("state")
 end)
 
 ns.On("GROUP_ROSTER_UPDATE", function()
-	if not IsInGroup() then
+	if not IsInGroup() and not ns.IsTestMode() then
 		StopWriting()
 		live.writer, live.mirror, live.observed, queried = nil, nil, {}, false
 	else
@@ -551,14 +656,27 @@ function ns.SessionRows()
 			row.roll, row.round = roll, r
 		end
 	end
-	for id, chance in pairs(m.odds or {}) do Row(id).odds = chance end
+	-- Odds from before any reroll, then the reroll's own for the players in it.
+	for id, chance in pairs(m.openOdds or {}) do Row(id).odds = chance end
+	for id, chance in pairs(m.odds or {}) do
+		if not m.contenders or m.contenders[id] then Row(id).odds = chance end
+	end
 	for _, id in ipairs(m.winners or {}) do Row(id).winner = true end
 	for _, row in ipairs(rows) do
 		if not row.pity and ns.ledger then row.pity = ns.ledger.state:GetPity(row.id, m.item, m.greed, m.opened) end
 		if row.roll then row.total = ns.EffectiveRoll(row.roll, ns.Bonus(row.pity or 0, row.offSpec)) end
 		row.contender = m.contenders and m.contenders[row.id] or nil
 	end
+	-- Your own row, at the top until you roll, is where the window's roll prompt goes.
+	if ns.CanRoll() then
+		local row = Row(UnitGUID("player"))
+		row.prompt = true
+		if not row.pity and ns.ledger then row.pity = ns.ledger.state:GetPity(row.id, m.item, m.greed, m.opened) end
+	end
 	table.sort(rows, function(a, b)
+		if (a.prompt or false) ~= (b.prompt or false) then return a.prompt == true end
+		-- The players in a reroll stay in their own section above everyone else, during it and after.
+		if m.contenders and (a.contender or false) ~= (b.contender or false) then return a.contender == true end
 		if (a.winner or false) ~= (b.winner or false) then return a.winner == true end
 		if (a.total or -1000) ~= (b.total or -1000) then return (a.total or -1000) > (b.total or -1000) end
 		if (a.odds or 0) ~= (b.odds or 0) then return (a.odds or 0) > (b.odds or 0) end

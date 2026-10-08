@@ -41,6 +41,8 @@ end
 
 -- Sends `data` to handlers registered for `kind` on other clients.
 function ns.Send(prefix, kind, data, channel, target)
+	if prefix == ns.PREFIX_SYNC and ns.IsTestMode() then return end -- a test ledger never leaves this client
+	ns.Capture("send", prefix, kind, data, channel, target)
 	comm:SendCommMessage(prefix, Encode(kind, data), channel, target, PRIORITY[prefix])
 end
 
@@ -50,10 +52,13 @@ function ns.Receive(prefix, kind, handler)
 end
 
 local function OnMessage(prefix, payload, channel, sender)
-	if ns.IsMe(sender) then return end
+	if ns.IsMe(sender) or (prefix == ns.PREFIX_SYNC and ns.IsTestMode()) then return end
 	local kind, data = Decode(payload)
+	ns.Capture("receive", prefix, kind, data, sender, channel)
 	local handler = kind and handlers[prefix][kind]
-	if handler then handler(data, sender, channel) end
+	if not handler then return end
+	local ok, err = xpcall(handler, ns.WithStack, data, sender, channel)
+	if not ok then ns.ReportError(prefix .. " " .. kind, err) end
 end
 
 for prefix in pairs(PRIORITY) do

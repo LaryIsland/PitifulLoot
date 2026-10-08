@@ -36,25 +36,49 @@ local function RebuildGroup()
 			group.byName[name] = member
 			if realm and realm ~= "" then group.byName[name .. "-" .. realm] = member end
 			group.list[#group.list + 1] = member
-			ns.RememberName(guid, name)
+			ns.RememberName(guid, name, class)
 		end
 	end
 end
 
+-- Officers are the ranks the guild gives officer privileges in its rank settings, which is what the game itself means
+-- by an officer (6.3); the guild master always is one. If the client can't read a rank's settings, ranks 0 and 1 count.
+local OFFICER_PRIVILEGES = 22 -- the rank flag behind GUILD_CONTROL_RANK_PERMISSION_HAS_OFFICER_PRIVLEGES
+local FALLBACK_OFFICER_RANK = 1
+
+local function IsOfficerRank(rank, known)
+	if rank == 0 then return true end
+	if known[rank] == nil then
+		local ok, flags = pcall(C_GuildInfo.GuildControlGetRankFlags, rank + 1)
+		if ok and type(flags) == "table" and flags[OFFICER_PRIVILEGES] ~= nil then
+			known[rank] = flags[OFFICER_PRIVILEGES] == true
+		else
+			known[rank] = rank <= FALLBACK_OFFICER_RANK
+		end
+	end
+	return known[rank]
+end
+
 local function RebuildGuild()
-	guild = { byName = {}, byGuid = {} }
+	guild = { byName = {}, byGuid = {}, onlineOfficers = {} }
+	local officerRanks = {}
 	for i = 1, GetNumGuildMembers() do
-		local name, _, rank, _, _, _, _, _, _, _, class, _, _, _, _, _, guid = GetGuildRosterInfo(i)
+		local name, _, rank, _, _, _, _, _, online, _, class, _, _, _, _, _, guid = GetGuildRosterInfo(i)
 		if name then
-			local member = { name = name, rank = rank, guid = guid, class = class }
+			local member = { name = name, rank = rank, guid = guid, class = class, officer = rank ~= nil and IsOfficerRank(rank, officerRanks) }
+			if member.officer and online then guild.onlineOfficers[#guild.onlineOfficers + 1] = member end
 			guild.byName[name] = member
 			guild.byName[ns.ShortName(name)] = guild.byName[ns.ShortName(name)] or member
 			if guid then
 				guild.byGuid[guid] = member
-				ns.RememberName(guid, ns.ShortName(name))
+				ns.RememberName(guid, ns.ShortName(name), class)
 			end
 		end
 	end
+	table.sort(guild.onlineOfficers, function(a, b)
+		if a.rank ~= b.rank then return a.rank < b.rank end
+		return a.name < b.name
+	end)
 	guildDirty = false
 end
 
@@ -90,8 +114,16 @@ function ns.GuildMember(key)
 end
 
 function ns.IsOfficer(name)
+	-- In test mode you count as an officer, as do players you've trusted with /pl test trust.
+	if ns.IsTestMode() and name and (ns.IsMe(name) or ns.saved.testOfficers[ns.ShortName(name)]) then return true end
 	local member = ns.GuildMember(name)
-	return member ~= nil and member.rank ~= nil and member.rank <= ns.settings.officerRank
+	return member ~= nil and member.officer == true
+end
+
+-- The officers online, highest rank first, then by name.
+function ns.OnlineOfficers()
+	if guildDirty then RebuildGuild() end
+	return guild.onlineOfficers
 end
 
 -- A player's GUID from their name, looking in the group and then the guild.
@@ -101,16 +133,35 @@ function ns.FindPlayer(name)
 end
 
 -- Names are kept locally so pity can be shown for players who aren't online.
-function ns.RememberName(guid, name)
-	if ns.db and guid and name then ns.db.names[guid] = name end
+-- Names and classes are kept locally so pity can be shown, class coloured, for players who aren't online.
+function ns.RememberName(guid, name, class)
+	if not (ns.saved and guid and name) then return end
+	ns.saved.names[guid] = name
+	if class then ns.saved.classes[guid] = class end
 end
 
 function ns.NameOf(guid)
 	local member = ns.GroupMember(guid)
 	if member then return member.name end
-	if ns.db and ns.db.names[guid] then return ns.db.names[guid] end
+	if ns.saved and ns.saved.names[guid] then return ns.saved.names[guid] end
 	local name = select(6, GetPlayerInfoByGUID(guid))
 	return name or guid
+end
+
+-- A player's class file name ("WARRIOR"), from a GUID or a name, if anything knows it.
+function ns.ClassOf(key)
+	local member = ns.GroupMember(key) or ns.GuildMember(key)
+	if member and member.class then return member.class end
+	if ns.saved and ns.saved.classes[key] then return ns.saved.classes[key] end
+	if type(key) == "string" and key:match("^Player%-") then return (select(2, GetPlayerInfoByGUID(key))) end
+end
+
+-- A name in its class colour, from a GUID or a name.
+function ns.ColoredName(key, name)
+	name = name or (type(key) == "string" and key:match("^Player%-") and ns.NameOf(key)) or key
+	local color = RAID_CLASS_COLORS[ns.ClassOf(key) or ""]
+	if not color then return name end
+	return ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, name)
 end
 
 -- Items ---------------------------------------------------------------------------------------------------------
@@ -130,9 +181,18 @@ function ns.IsBoE(item)
 	return select(14, C_Item.GetItemInfo(item)) == 2
 end
 
-local function ItemSpecs(item)
+-- Items that are nobody's spec in particular: cosmetics, and anything that isn't gear (mounts, pets, recipes).
+-- Anyone can roll on them, and nobody is off-spec for them.
+function ns.ForEveryone(item)
+	if C_Item.IsCosmeticItem and C_Item.IsCosmeticItem(item) then return true end
+	if C_Item.IsEquippableItem and not C_Item.IsEquippableItem(item) then return true end
 	local specs = C_Item.GetItemSpecInfo(item)
-	if specs and #specs > 0 then return specs end
+	return not (specs and #specs > 0)
+end
+
+local function ItemSpecs(item)
+	if ns.ForEveryone(item) then return nil end
+	return C_Item.GetItemSpecInfo(item)
 end
 
 -- Whether the player's class can use the item at all (4.5). Anything the client can't say counts as usable.

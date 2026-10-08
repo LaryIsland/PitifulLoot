@@ -1,6 +1,6 @@
 # Pitiful Loot — Design Document
 
-*Draft v0.2 · Source of truth until v1.0 · Last updated 7 Oct 2026*
+*Draft v0.2 · Source of truth until v1.0 · Last updated 8 Oct 2026*
 
 **Legend:** **\[Decided\]** = stated by the project owner. **\[Proposed\]** = suggested during design review, not yet confirmed. **\[Open\]** = needs a decision.
 
@@ -22,7 +22,7 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 
 - All raid drops are BoP; BoE items are the exception (see 4.8). **\[Decided\]**
 - Single difficulty, one item ID per item, so pity is never fragmented across item versions (the "Forever" setting). **\[Decided\]**
-- Gear in future tiers is expected to be more horizontal (see 4.10). **\[Decided as context; handling is Open\]**
+- Gear in future tiers is expected to be more horizontal (see 4.10). **\[Decided\]**
 - Client: **WoW: Forever only**, at least for now. **\[Decided\]**
 - Loot method: **master loot**, with officers distributing won items. **\[Decided\]**
 - The addon only ever runs **outside of combat**. **\[Decided\]**
@@ -33,17 +33,17 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 | Rule | Value | Status |
 | --- | --- | --- |
 | Pity gain | +10 per lost roll, on that item only | Decided |
-| Pity maximum | +50 (working value; +40 is the alternative) | Open |
+| Pity maximum | +50 | Decided |
 | Effective roll | `min(d100 + pity + modifier, 100)` | Decided |
-| Off-spec modifier | -20 (working value; -10 is the alternative) | Open |
+| Off-spec modifier | -20, no floor | Decided |
 | Tie | Reroll among tied players only, pity retained | Decided |
 | New player | Starts at 0 on every item | Decided |
-| Winning | Does **not** reset pity; you may never roll on that item again | Decided |
+| Winning | Does **not** reset pity; after a need win you may never roll on that item again | Decided |
 | Lost rolls counted | All of them, including off-spec and any roll type | Decided |
 | Pity award timing | Once, after the item is awarded, +10 to everyone who rolled except the winner | Decided |
-| Passing | Whether passing affects pity | Open |
+| Not rolling | No effect on pity | Decided |
 | Leaver decay | -10 pity per week until 0 | Decided |
-| Absence decay | None, or -10 per month (undecided) | Open |
+| Absence decay | None | Decided |
 | State authority | Centralised; only officers' copies are authoritative | Decided |
 | Source of truth | Audit log of results; pity table is derived from it | Decided |
 | Pre-roll odds | Approximate, shown per person in the UI before the roll | Decided |
@@ -65,27 +65,28 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 - A player gains **+10 pity on an item for every lost roll on it**, up to a **maximum of +50**. **\[Decided\]**
 - **Every lost roll counts**: need, off-spec, and any other roll type. **\[Decided\]**
 - Pity is awarded **once, after the item has been awarded**: every player who rolled, other than the winner, gains +10. Players eliminated in a tie reroll gain +10 once, not once per round. **\[Decided\]**
-- Whether **passing** leaves pity unchanged or resets it on that item. **\[Open\]**
+- **Not rolling has no effect on pity.** With plain `/roll` there's no pass button, so passing can't be told apart from being AFK or missing the window, and nobody should be punished for those. **\[Decided\]**
 - Pity accrues at the **full rate on off-spec rolls**; off-spec rollers do not accrue more slowly. A tank who has to play DPS for a raid should not take both a roll penalty and slower pity. **\[Decided\]**
 - Pity is tracked per **item ID**. **\[Decided\]**
-- Pity is tracked **per character**, keyed by character GUID. This is implied by the alt discussion (alts are disincentivised because pity accrues slower when your attendance is split). **\[Open: confirm per-character\]**
+- Pity is tracked **per character**, keyed by character GUID. Alts are disincentivised because pity accrues slower when your attendance is split; the game can't link a player's characters anyway. **\[Decided\]**
 - Pity on one item can never affect another item. **\[Decided\]**
 
 ### 4.2 Effective roll
 
 `effective = min(d100 + pity + modifier, 100)`
 
-- `pity` is 0 to +50. `modifier` is 0 for main-spec and **-20 for off-spec** (working value). **\[Open: -10 versus -20\]**
+- `pity` is 0 to +50. `modifier` is 0 for main-spec and **-20 for off-spec**. **\[Decided\]**
 - The modifier is applied **before** the clamp at 100, so it reads as "two lost rolls behind". **\[Decided\]**
-- **No floor** on effective pity or on the effective roll: effective pity runs from -20 to +30 for off-spec. **\[Proposed\]** Flooring effective pity at 0 would make a fresh off-spec player exactly as strong as a fresh main-spec player and remove the penalty for anyone below +20 stored pity.
+- **No floor** on effective pity or on the effective roll: effective pity runs from -20 to +30 for off-spec. **\[Decided\]** Flooring effective pity at 0 would make a fresh off-spec player exactly as strong as a fresh main-spec player and remove the penalty for anyone below +20 stored pity.
 - The clamp wastes overflow: each pity step is worth less than the one before it (see 7.1).
 
 ### 4.3 Ties
 
 - Players tied on the highest effective roll **reroll among themselves only**, retaining their pity, until one player is strictly highest. **\[Decided\]**
 - Because many rolls clamp to 100 at high pity, ties between capped players are common. Expect several reroll rounds in saturated pools; this is acceptable. Note however that if everyone rolling has the same pity level, you can just accept the highest roll without pity taken into account.
-- The same shortcut applies to a **tied subgroup** whose members all have the same effective pity: comparing their original raw rolls gives identical odds to a reroll and saves `/roll` rounds. It does **not** hold when tied players have different effective pity; those must reroll. **\[Proposed; implemented\]**
-- A tied player who does not reroll before the writer closes the reroll round is left out of it. **\[Proposed\]**
+- The same shortcut applies to a **tied subgroup** whose members all have the same effective pity: comparing their original raw rolls gives identical odds to a reroll and saves `/roll` rounds. It does **not** hold when tied players have different effective pity; those must reroll. **\[Decided\]**
+- A reroll **ends as soon as every tied player has rolled**, or when its time runs out. From the fourth reroll in a row, the raid is told the players are **roll-locked**, as high-pity players can tie at 100 again and again. **\[Decided\]**
+- A tied player who does not reroll before the reroll round closes is dropped from it and loses (they still gain pity, having rolled in the first round). **\[Decided\]**
 
 ### 4.3a Multiple copies
 
@@ -95,7 +96,7 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 
 ### 4.4 Winning and the lockout
 
-- A player **may never roll again on an item they have already won**. **\[Decided\]**
+- A player **may never roll again on an item they have already won** with a need roll. A greed win doesn't lock (4.8). **\[Decided\]**
 - A winner may give the item to someone else (for example a friend). They stay locked out of it permanently, so gifting costs them the item. **\[Decided\]**
 - Over time the pool for an item shrinks, because each winner removes themselves from it.
 - **Duplicate-equippable items** (non-Unique-Equipped items that can fill two slots, such as dual-wield one-handers, rings, trinkets): if any such item exists, the player may roll for a second copy with **pity reset to 0** for that roll, and the first copy must be **equipped** (verified by the addon) so it cannot be traded away. I really doubt such items exist, so this is **deferred to after v1.0 unless one is found**. **\[Decided in principle; implementation deferred\]**
@@ -104,6 +105,7 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 
 - A player may roll only on items **sensible for their character** (usable by the class and an upgrade for them), and may roll on **every** such item. **\[Decided\]**
 - Players cannot roll on items their character cannot use. **\[Decided\]**
+- Items that are **nobody's spec in particular** (cosmetics, and anything that isn't gear, such as mounts or recipes) are open to everyone, and nobody is off-spec for them. **\[Decided\]**
 - Eligibility is derived from item and spec data, not officer judgement, so there are no "sensible gear" arguments. **\[Proposed\]**
 - How "upgrade" is determined is **parked** until that part of the addon is built. **\[Open: parked\]**
 
@@ -111,8 +113,8 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 
 - The role a player rolls as is **whatever they are actually doing in the raid**: tanking means rolling as a tank, DPS means rolling as DPS. Still allowing rolls for off role gear but with the off-spec penalty. **\[Decided\]** 
 - Pity is per item, so switching roles between raids does not change a player's pity; only the -20 offset applies when the item is not for the current role. **\[Decided\]**
-- To stop spec-swapping to dodge the penalty, snapshot the role at raid start or at each pull, with an officer override for genuine mid-raid swaps. **\[Proposed\]**
-- How the role is detected (assigned roles, talent inspection, or player declaration, which is easy to lie about) is **\[Open\]**, particularly in Classic.
+- The role is detected by the writer's client **inspecting each raider's spec** and comparing it with the specs the item suits (`C_Item.GetItemSpecInfo`). The writer can flip any roll's off-spec flag before the first round closes. **\[Decided\]** Whether Forever's item spec lists separate tank from DPS gear is to be checked in the beta (10.3).
+- To stop spec-swapping to dodge the penalty, the spec is **fixed the first time the writer sees it each raid**. A genuine mid-raid role swap is handled by the writer flipping the flag. **\[Decided\]**
 
 ### 4.7 New players
 
@@ -126,19 +128,18 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 - If nobody needs it, a **greed roll**. **\[Decided\]**
 - Pity rises for greed rollers **only if the greed roll actually happens**. **\[Decided\]**
 - greed-roll pity is held in a **separate counter** and can never be used as need-roll pity. **\[Decided: accepted as sensible\]**
+- **Winning a greed roll doesn't lock the winner out** and changes none of their pity, so they can still need-roll the item if it becomes an upgrade. **\[Decided\]**
 
 ### 4.9 Decay and leaving
 
 - **Leavers**: a player who leaves the guild loses **10 pity per week until 0**, so they can rejoin but at a cost. Applies to every item. The -10 decay happens every 7 days after leaveing, not on the day of leaving **\[Decided\]**
-- **Absent members** (still in the guild): **\[Open\]**. Options:
-  - A: never decay.
-  - B: lose 10 pity per month without raid attendance, where **attempted attendance counts as present** if the raid was full and the player was benched.
-  - Proposed refinements to B: a grace window (the first 2-3 missed raids do not count) and exempt excused absences. At 10 per month, a returning +50 player takes five months to reach zero.
+- Leaving and rejoining are **recorded automatically**. Officers' clients compare the guild roster with the ledger. The online officer with the highest rank (then first by name) records the change; the others wait longer, in that order, and only step in if it still hasn't been recorded. Decay counts from when the leave was first seen. Officers can also record either by hand. **\[Decided\]**
+- **Absent members** (still in the guild) **don't decay**: pity only ever rewards waiting, and there's no attendance to record. **\[Decided\]**
 
 ### 4.10 New tiers and horizontal gear
 
 - New-tier items start at 0 for everyone (a consequence of per-item pity); old-tier pity stays but is moot.
-- Gear is expected to become more horizontal, so more players will want each piece and pools will be larger, which makes the new-player odds in 7.3 worse. The owner considers this covered by class-eligibility plus once-per-item. How this plays out needs more thought. **\[Open\]**
+- Gear is expected to become more horizontal, so more players will want each piece and pools will be larger, which makes the new-player odds in 7.3 worse. This is accepted as covered by class-eligibility plus once-per-item, and will be **reviewed after the first tier** (raids open 9 Dec 2026) using real pool sizes from the ledger. **\[Decided\]**
 
 ## 5. Roll flow and UI
 
@@ -161,6 +162,14 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 - Roll results show a breakdown, for example: `Lary: roll 62, pity +50, off-spec -20 → 92`. **\[Proposed\]**
 - The pity table is visible to everyone with the addon. **\[Decided\]**
 - Hiding rolls from other players is **not needed**: rolling is free and a roll cannot be changed after it is seen. **\[Decided\]**
+- While a player can roll, **their own row sits at the top of the roll page with "Click to roll"** across it, which does the `/roll 1-100` for them, with their odds still on the right; typing `/roll` still works the same. Their own row is always highlighted. A roll a player can take part in opens the window on the Roll tab (a setting turns this off). **\[Decided\]**
+- **The loot is shared with the whole group.** The officer who loots the boss (the master looter) sends the item list, and everyone's Loot tab shows each item's roll: rolling, won, awarded (greyed out, with the winners' names) or no one rolled, plus their own pity on it. Each boss's loot is a group headed by the boss, in the order it was seen; new loot opens its group and folds the others away. Only the writer can start rolls from it: left-click an item for a roll, right-click a BoE for a greed roll, as its tooltip says. **\[Decided\]**
+- In a reroll, the tied players have their own section above everyone else, during the reroll and after it; players out of it keep their roll and their odds from before the tie. **\[Decided\]**
+- The **My pity** list shows, next to each item's pity, how much better your odds are than with no pity, one on one (from 7.1). **\[Decided\]**
+- The window has an **Options tab** (always the bottom tab) with the same options as the game's settings page. Options for running rolls are hidden unless an officer ticks **Officer options** in its corner; members never see them.
+- **Every player's name is shown in their class colour.** **\[Decided\]**
+- Announcements are plain sentences without the addon's name, to keep them easy to skim. They go to **raid chat** (party chat in a party), never `/say`, so everyone in the group sees them with or without the addon. When the writer is raid leader or an assistant, the headlines (a roll starting, a tie, the result, no rolls) are **raid warnings**; breakdowns stay in raid chat. A setting turns raid warnings off. **\[Decided\]**
+- The **My pity** list is grouped under the raid each item drops in, with a setting to group by boss inside each raid. Groups collapse. Where an item drops is recorded with each roll (the writer's instance, and the boss last killed there); items with no recorded source go under Other. **\[Decided\]**
 
 ## 6. Authority, trust and data sync
 
@@ -175,13 +184,14 @@ Pitiful Loot is a WoW guild raid loot addon that adds a **per-item pity timer** 
 ### 6.2 Single writer
 
 - One officer is the **writer** for each raid session; other officers hold read-only mirrors and reconcile after the raid. This avoids two officers writing conflicting results. **\[Proposed\]**
-- If the writer leaves or disconnects, **another officer takes over** as writer. **\[Decided\]**
+- If the writer leaves, disconnects or reloads mid-roll, **another officer takes over** as writer, carrying on from their own copy of the roll. **\[Decided\]**
 
 ### 6.3 Publishing the pity table
 
 - The pity table is **published to everyone with the addon**. **\[Decided\]**
 - **Only officers can push updates**, and clients accept updates **only from officers**. **\[Decided\]**
 - The game stamps the real sender name on addon messages, so "is the sender an officer" can be checked against guild rank. **\[Proposed as mechanism\]**
+- **Officers are the guild ranks given officer privileges in the guild's own rank settings** ("Has officer privileges", what the game itself means by an officer), so every client agrees without any setting. The guild master always counts. If a client can't read the rank settings, ranks 0 and 1 count. **\[Decided\]**
 - Sharing uses a **two-way handshake**, so a tampering sharer's name is very obvious. **\[Decided\]**
 - A tampered client only changes what that player sees; it cannot change an outcome. **\[Decided: accepted risk\]** The real risk is a tampered *officer* client. But auditing from every other player in the raid with the addon should catch that instantly.
 - Each update carries a **revision number and a hash of the full table**. Officers compare hashes to detect divergence, and clients display "rev N published by Officer X, verified". **\[Decided\]** Implemented as a hash chain: the revision is the number of log entries, and each entry carries the hash of the one before it, so the head hash covers the whole history and therefore the table.
@@ -230,7 +240,7 @@ Pity is per item, so a new player does not build pity across items within a raid
 | 6 | 0.13% | 0.8% | 99.2% |
 | 8 | 0.03% | 0.2% | 99.8% |
 
-The 12% in the design tenets holds only against **one** capped player. This is the worst case; it eases as winners remove themselves from the pool and resets at tier launch. However it is the main decider for whether the cap should drop to +40 or not.
+The 12% in the design tenets holds only against **one** capped player. This is the worst case; it eases as winners remove themselves from the pool and resets at tier launch. It was the main question for whether the cap should drop to +40; the cap stays at +50 (decided 8 Oct 2026).
 
 ### 7.4 If the cap were lower (not adopted)
 
@@ -245,14 +255,14 @@ The 12% in the design tenets holds only against **one** capped player. This is t
 | Concern | Disposition |
 | --- | --- |
 | Rolling on everything to farm pity | Not possible: pity is per item and players can only roll on items usable and sensible for their character. |
-| Alts and extra characters | Pity is per character, so playing one character means not playing another; alts accrue pity slower. Confirm per-character tracking. |
+| Alts and extra characters | Pity is per character, so playing one character means not playing another; alts accrue pity slower. **\[Decided\]** |
 | Win then give the item to a friend | Allowed. The winner is locked out of that item permanently. |
 | BoE and vendor items | Raid drops are BoP. BoE: need roll first, then greed roll with a separate pity counter. |
 | Seeing rolls before committing | Irrelevant: rolling is free and rolls cannot be changed. |
 | Tampering with pity state | Centralised officer-held state; clients accept only officer updates; hashes and audit log (6). |
-| Spec-swapping to dodge the off-spec penalty | Snapshot role at raid start or per pull. **\[Proposed\]** |
+| Spec-swapping to dodge the off-spec penalty | Spec fixed when the writer first sees it each raid; the writer can flip a roll's flag. **\[Decided\]** |
 | Spamming rolls or odd roll ranges | First roll per window only; reject non-1-100 ranges. **\[Proposed\]** |
-| Returning with stale high pity | Decay options in 4.9. **\[Open\]** |
+| Returning with stale high pity | Accepted: pity rewards waiting, and only leaving the guild decays it (4.9). **\[Decided\]** |
 | Passing an item to dodge the lockout (duplicates) | Pity reset plus first copy must be equipped. **\[Deferred\]** |
 
 ## 9. Accepted shortcomings (explicitly decided)
@@ -267,20 +277,22 @@ The 12% in the design tenets holds only against **one** capped player. This is t
 
 ## 10. Open questions
 
-1. Whether passing leaves pity unchanged or resets it.
-2. Absence decay: none, or -10 per month, with grace window, excused absences, and how "attempted attendance" is defined.
-3. Off-spec penalty size (-20 versus -10) and whether to floor.
-4. Role detection method in WoW: Forever and when the role is snapshotted.
-5. Whether to keep the +50 cap or lower it (7.4).
-6. Which guild ranks count as "officer" for publishing and accepting table updates.
-7. Duplicate-equippable item handling: build only if it actually comes up (`C_Item.GetItemUniqueness` can detect candidates).
-8. How "upgrade" in the eligibility rule (4.5) is determined from item data. Parked until needed.
-9. Runtime behaviour to confirm in the beta client: roll system messages arrive and parse as expected, raid roles and inspected specs are readable (not secret) out of combat, and addon messages are not restricted.
-10. Addon message limits. Messages go through AceComm and ChatThrottleLib, which pace them by bandwidth and retry any the client reports as throttled; live roll messages go out before ledger sync. The harness assumes the client allows 10 messages at once per prefix, then 1 a second. If that's right, live rolls fit (they're batched), but a first full ledger sync is slow (roughly 250 bytes a second per officer, after compression). Measure in the beta.
-11. Officer ranks are a local setting (`/pl officerrank`, default ranks 0-1). Clients with different settings disagree about whose updates count. Consider storing it in the ledger.
-12. `C_Item.GetItemSpecInfo` may list tank specs on DPS items (it follows primary stats), so the automatic off-spec flag can miss role mismatches. The writer can flip any entrant's flag before the first round closes.
-13. Leaving and rejoining the guild are recorded by hand (`/pl leave`, `/pl rejoin`). Automatic detection from the guild roster would need one officer to own it, or every officer would record the same leave.
-14. If the writer reloads mid-roll, their copy of the roll is gone and only the writer answers requests for it, so another officer has to take over from their own copy. Tied players who do not reroll are dropped from the reroll.
+Decided on 8 Oct 2026, in the sections above: not rolling, absence decay, the off-spec penalty, role detection and snapshots, the cap, officer ranks, leavers, writer reloads, tied players who don't reroll, per-character pity, horizontal gear, the raw-roll tiebreak and greed wins. What's left:
+
+1. Duplicate-equippable item handling: build only if it actually comes up (`C_Item.GetItemUniqueness` can detect candidates).
+2. How "upgrade" in the eligibility rule (4.5) is determined from item data. Parked until needed.
+3. Runtime behaviour to confirm in the beta client:
+   - roll system messages arrive and parse as expected;
+   - inspected specs are readable (not secret) out of combat;
+   - what `C_Item.GetItemSpecInfo` lists, in particular whether DPS items also list tank specs (4.6);
+   - whether ordinary members' clients can read other ranks' officer privileges (6.3);
+   - addon messages are not restricted.
+4. Addon message limits. Messages go through AceComm and ChatThrottleLib, which pace them by bandwidth and retry any the client reports as throttled; live roll messages go out before ledger sync. The harness assumes the client allows 10 messages at once per prefix, then 1 a second. If that's right, live rolls fit (they're batched), but a first full ledger sync is slow (roughly 250 bytes a second per officer, after compression). Measure in the beta.
+
+### Later features (agreed, not yet built)
+
+- **Raid management tab**, for officers only: every raider and the role they're currently down as (tank, healer or damage), in sections with dividers between them.
+- **End the opening round early** once every eligible player in the raid has rolled, as rerolls already do. Needs a reliable idea of who is eligible (class, spec, lockouts, and whether someone simply doesn't want the item), so it isn't built yet.
 
 ## 11. Alternatives considered, not adopted
 

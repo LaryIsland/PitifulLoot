@@ -1,160 +1,556 @@
 local _, ns = ...
 
--- The window: the roll in progress with each player's pity, spec, roll and odds (5.2), the master looter's loot,
--- and your own pity. The writer's controls sit along the bottom.
+-- The window, made from Forever's own templates and art so it sits alongside the game's panels: a portrait frame
+-- with side tabs like the group finder, a stone header and list rows like its Who list, and the timer bar and
+-- checkmark from the loot history. It shows the roll in progress (5.2), the master looter's loot, and your pity.
 
-local WIDTH, HEIGHT = 480, 440
-local ROW_HEIGHT = 16
-local ROW_COUNT = 16
-local ACTION_WIDTH = 64
-
-local COLUMNS = {
-	{ key = "name", width = 160, justify = "LEFT" },
-	{ key = "pity", width = 45, justify = "RIGHT" },
-	{ key = "spec", width = 55, justify = "CENTER" },
-	{ key = "roll", width = 60, justify = "RIGHT" },
-	{ key = "total", width = 50, justify = "RIGHT" },
-	{ key = "odds", width = 60, justify = "RIGHT" },
+local WIDTH, HEIGHT = 384, 524
+local ROW_HEIGHT = 52
+local VALUE_WIDTH = 104 -- room on the right of a row for its value
+local DIVIDER_HEIGHT = 14
+local DETAIL_COLUMNS = 3 -- a roll row's details: its roll, pity and off-spec, each in a column of the same width
+-- Sized to their text ("Rerolled 62", "Pity +50", "Off-spec -20"), so the gaps between them look the same.
+local COLUMN_WIDTHS = { 66, 54, 84 }
+local MIN_HEIGHT, MAX_HEIGHT = 400, 900
+local ROLL_LOCK = 3 -- rerolls in a row after which the header calls the players roll-locked
+local BACKGROUND_FOCUS = 0.6 -- how far across the background art its crop centres
+local ADDON_ICON = "Interface\\Icons\\INV_Misc_Dice_02"
+local VIEWS = {
+	{ key = "session", label = "Roll", icon = "Interface\\Icons\\INV_Misc_Dice_02" },
+	{ key = "pity", label = "My pity", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01" },
+	{ key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Box_02" }, -- only there once loot has been seen
+	{ key = "options", label = "Options", icon = "Interface\\Icons\\INV_Misc_Gear_01" }, -- always at the bottom
 }
-local HEADERS = {
-	session = { name = "Player", pity = "Pity", spec = "Spec", roll = "Roll", total = "Total", odds = "Odds" },
-	loot = { name = "Item", pity = "Copies" },
-	pity = { name = "Item", pity = "Pity", spec = "" },
+local EMPTY = {
+	session = "No roll in progress.",
+	pity = "You haven't built up pity on anything yet.",
+	loot = "Loot a boss as master looter to list its items here.",
+	options = "",
 }
-local STATES = {
-	open = "Rolling", reroll = "Reroll", decided = "Decided", cancelled = "Cancelled", awarded = "Awarded",
-}
-local WHITE, GREY, GREEN, YELLOW = { 1, 1, 1 }, { 0.6, 0.6, 0.6 }, { 0.3, 1, 0.3 }, { 1, 0.85, 0.2 }
+local STATES = { open = "Rolling", reroll = "Reroll", decided = "Decided", cancelled = "Cancelled", awarded = "Awarded" }
+local GREY = { r = 0.486, g = 0.518, b = 0.541 } -- FRIENDS_GRAY_COLOR, which the Who list uses for its details
+local HEADER_HEIGHT = 26
+local OTHER_RAID = "Other" -- items with no recorded raid, such as ones set by hand
+local OTHER_BOSS = "Unknown boss"
+local WARNINGS_SHOWN = 5
 
 local frame
-local rows, headers, tabs, buttons = {}, {}, {}, {}
-local view, offset, lines = "session", 0, {}
+local view = "session"
+local lines = {}
 
-local function Text(parent, font, justify)
-	local text = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
-	text:SetJustifyH(justify or "LEFT")
-	return text
+local function Colored(text, color)
+	if not color then return text end
+	return ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, text)
 end
 
-local function Button(parent, label, width, onClick)
-	local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-	button:SetSize(width, 20)
-	button:SetText(label)
-	button:SetScript("OnClick", onClick)
-	return button
+-- What the window offers: writer and officer controls, unless test mode is showing it as a member sees it.
+local function AsWriter()
+	return ns.AmWriter() and not ns.ViewAsMember()
 end
 
+local function AsOfficer()
+	return ns.IsOfficer(ns.PlayerName()) and not ns.ViewAsMember()
+end
+
+local function NameList(ids)
+	local names = {}
+	for i, id in ipairs(ids) do names[i] = ns.ColoredName(id) end
+	return table.concat(names, ", ")
+end
+
+-- Everyone in a pool can win (no bonus is 100 above another's), so a chance too small to show is shown as 0.1%.
 local function Percent(chance)
-	if chance >= 0.995 or chance == 0 then return ("%d%%"):format(chance * 100 + 0.5) end
+	if chance < 0.001 then return "0.1%" end
+	if chance >= 0.995 then return ("%d%%"):format(chance * 100 + 0.5) end
 	return ("%.1f%%"):format(chance * 100)
 end
 
--- Lines for each view: { cells = {column = text}, color, link or tip, click, actions = {{label, func}} }.
+local function ItemIcon(item)
+	return (select(10, C_Item.GetItemInfo(item)))
+end
+
+-- Lines for each view. `cells` are the bare values; the rest is how a row shows them.
 
 local function SessionLines()
 	local m = ns.live.mirror
 	local out = {}
 	if not m then return out end
+	local canFlip = AsWriter() and m.state == "open" and not ns.ForEveryone(m.item)
 	for _, row in ipairs(ns.SessionRows()) do
-		local roll = row.roll and tostring(row.roll) or "-"
-		if row.round and row.round > 1 then roll = roll .. " (r" .. row.round .. ")" end
+		local id = row.id
 		local spec = ""
 		if row.roll then spec = row.offSpec and "off" or (row.unknownSpec and "?" or "main") end
-		local color = row.winner and GREEN or (row.contender and YELLOW) or (row.roll and WHITE) or GREY
-		local id = row.id
+		local columns = {
+			row.roll and (row.round > 1 and "Rerolled %d" or "Rolled %d"):format(row.roll) or "",
+			row.pity and row.pity > 0 and ("Pity +" .. row.pity) or "",
+			row.offSpec and ("Off-spec %d"):format(ns.OFFSPEC_MODIFIER) or (row.unknownSpec and "Spec unknown") or "",
+		}
+		-- The roll and what went into it; the total is the number being hovered.
+		local summary = { row.roll and tostring(row.roll) or "Hasn't rolled" }
+		if row.roll and row.pity and row.pity > 0 then summary[#summary + 1] = "+" .. row.pity end
+		if row.roll and row.offSpec then summary[#summary + 1] = ("%d (off-spec)"):format(ns.OFFSPEC_MODIFIER) end
+		local tip = { ns.ColoredName(id, row.name), table.concat(summary, " ") }
+		if canFlip and row.roll then
+			tip[3] = "Click to count this roll as " .. (row.offSpec and "main-spec." or "off-spec.")
+		end
+		local click = canFlip and row.roll and function() ns.ToggleOffSpec(id) end or nil
+		if row.prompt then
+			tip = { "Roll", "Does a /roll 1-100 for you. Everyone in the group sees it." }
+			click = ns.Roll
+		end
+		local mine = id == UnitGUID("player")
+		-- In a reroll, a divider between the tied players, who come first, and everyone else.
+		if m.contenders and not row.contender and out[1] and out[#out].contender then
+			out[#out + 1] = { divider = true }
+		end
 		out[#out + 1] = {
+			mine = mine,
+			mineColor = mine and RAID_CLASS_COLORS[ns.ClassOf(id) or ""] or nil,
 			cells = {
-				name = row.name, pity = row.pity and ("+" .. row.pity) or "", spec = spec, roll = roll,
-				total = row.total and tostring(row.total) or "", odds = row.odds and Percent(row.odds) or "",
+				name = row.name, pity = row.pity and ("+" .. row.pity) or "", spec = spec,
+				roll = row.roll and tostring(row.roll) or "-", total = row.total and tostring(row.total) or "",
+				odds = row.odds and Percent(row.odds) or "",
 			},
-			color = color,
-			tip = row.roll and ns.Breakdown(m, id) or (row.name .. " hasn't rolled"),
-			click = function() ns.ToggleOffSpec(id) end,
+			title = ns.ColoredName(id, row.name),
+			columns = columns,
+			value = row.total and tostring(row.total) or (row.odds and Percent(row.odds)) or "",
+			note = row.odds and (Percent(row.odds) .. " chance") or (not row.roll and "Hasn't rolled") or "",
+			prompt = row.prompt and (m.state == "reroll" and "Click to reroll" or "Click to roll") or nil,
+			winner = row.winner,
+			contender = row.contender,
+			faded = not row.roll and not row.prompt,
+			tip = tip,
+			click = click,
 		}
 	end
 	return out
 end
 
+-- Each boss's loot, for everyone, under a header per boss in the order it was seen. Each item shows how its roll went
+-- and your pity on it; awarded ones are greyed out with their winners. Only the writer gets buttons to start rolls.
+local lootCollapsed = {}
+
 local function LootLines()
 	local out = {}
-	for _, loot in ipairs(ns.loot) do
-		local actions = { { "Roll", function() ns.StartRoll(loot.item, loot.copies) end } }
-		if loot.boe then actions[2] = { "Greed", function() ns.StartRoll(loot.item, loot.copies, true) end } end
-		out[#out + 1] = { cells = { name = loot.link, pity = "x" .. loot.copies }, color = WHITE, link = loot.link, actions = actions }
+	local canStart = AsWriter()
+	local state, me = ns.ledger and ns.ledger.state, UnitGUID("player")
+	for index, group in ipairs(ns.loot.groups) do
+		local key = group.key
+		out[#out + 1] = {
+			header = 1, key = key, collapsed = lootCollapsed[key],
+			text = ("%s (%d)"):format(group.boss or ("Loot " .. index), #group.items),
+			toggle = function() lootCollapsed[key] = not lootCollapsed[key] or nil end,
+		}
+		for _, entry in ipairs(lootCollapsed[key] and {} or group.items) do
+			local item = entry.item
+			local done = entry.status == "awarded"
+			local detail = {}
+			-- Once it's won, the winners show how many there were.
+			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = entry.copies .. " copies" end
+			if entry.boe then detail[#detail + 1] = "Binds on Equip" end
+			local status
+			if entry.status == "rolling" then
+				status = Colored("Rolling now", NORMAL_FONT_COLOR)
+			elseif entry.status == "decided" then
+				status = "Won by " .. NameList(entry.pending or {})
+			elseif done then
+				status = "Awarded to " .. NameList(entry.winners)
+			elseif entry.winners[1] then
+				status = ("%d of %d awarded: %s"):format(#entry.winners, entry.copies, NameList(entry.winners))
+			elseif entry.status == "none" then
+				status = "No one rolled"
+			end
+			if status then detail[#detail + 1] = status end
+			local click, hints
+			if canStart and (entry.status == "waiting" or entry.status == "none") then
+				local copies = entry.copies - #entry.winners
+				hints = { "Left-click to start a roll." }
+				if entry.boe then hints[2] = "Right-click to start a greed roll." end
+				click = function(button)
+					if button == "LeftButton" then
+						ns.StartRoll(item, copies)
+					elseif button == "RightButton" and entry.boe then
+						ns.StartRoll(item, copies, true)
+					end
+				end
+			end
+			-- Your own pity on it, on the right.
+			local won = state and state:HasWon(me, item)
+			local pity = state and state:GetPity(me, item, false, GetServerTime()) or 0
+			local value, note = won and "" or ("+" .. pity), won and "You've won this" or "Your pity"
+			local name = C_Item.GetItemInfo(item)
+			out[#out + 1] = {
+				cells = { name = ns.ItemLink(item), pity = "x" .. entry.copies, spec = entry.status },
+				icon = ItemIcon(item),
+				title = done and Colored(name or ns.ItemLink(item), GREY) or ns.ItemLink(item),
+				detail = table.concat(detail, "  ·  "),
+				value = value,
+				note = note,
+				contender = entry.status == "rolling",
+				faded = done,
+				desaturate = done,
+				item = item,
+				click = click,
+				hints = hints,
+			}
+		end
 	end
 	return out
 end
 
+-- Sorted names, with the catch-all group last.
+local function SortedKeys(groups, last)
+	local keys = {}
+	for key in pairs(groups) do keys[#keys + 1] = key end
+	table.sort(keys, function(a, b)
+		if (a == last) ~= (b == last) then return b == last end
+		return a < b
+	end)
+	return keys
+end
+
+-- Your pity, grouped under the raid each item drops in, and optionally the boss, as collapsible headers like the
+-- currency list's. Items with the most pity come first; items already won come last.
 local function PityLines()
 	local out = {}
 	local state, me = ns.ledger and ns.ledger.state, UnitGUID("player")
 	if not state then return out end
 	local now = GetServerTime()
-	local function Add(item, text, note, color)
-		out[#out + 1] = { cells = { name = ns.ItemLink(item), pity = text, spec = note }, color = color, link = ns.ItemLink(item) }
+	local byBoss = ns.settings.pityByBoss
+	local raids = {}
+	local function Add(item, pity, note)
+		local source = state.sources[item]
+		local raid = source and source.instance or OTHER_RAID
+		local boss = byBoss and (source and source.boss or OTHER_BOSS) or ""
+		raids[raid] = raids[raid] or { count = 0, bosses = {} }
+		raids[raid].count = raids[raid].count + 1
+		raids[raid].bosses[boss] = raids[raid].bosses[boss] or {}
+		local chance = pity and pity > 0 and ns.HeadToHead(pity) or nil
+		table.insert(raids[raid].bosses[boss], {
+			cells = { name = ns.ItemLink(item), pity = pity and ("+" .. pity) or "", spec = note },
+			icon = ItemIcon(item),
+			title = ns.ItemLink(item),
+			detail = note,
+			value = pity and ("+" .. pity) or "",
+			note = chance and ("%d%% vs 0 pity"):format(chance * 100 + 0.5) or nil,
+			sort = pity or -1,
+			winner = note == "Won",
+			item = item,
+		})
 	end
-	for item in pairs(state.pity[me] or {}) do Add(item, "+" .. state:GetPity(me, item, false, now), "", WHITE) end
-	for item in pairs(state.greed[me] or {}) do Add(item, "+" .. state:GetPity(me, item, true, now), "greed", WHITE) end
-	for item in pairs(state.won[me] or {}) do Add(item, "", "won", GREEN) end
-	return out
-end
+	for item in pairs(state.pity[me] or {}) do Add(item, state:GetPity(me, item, false, now), "Need") end
+	for item in pairs(state.greed[me] or {}) do Add(item, state:GetPity(me, item, true, now), "Greed") end
+	for item in pairs(state.won[me] or {}) do Add(item, nil, "Won") end
 
-local function StatusText()
-	local parts = {}
-	if ns.ledger then
-		local rev, head = ns.ledger:Revision()
-		parts[#parts + 1] = ("Revision %d (%s)"):format(rev, head:sub(1, 8))
-		if ns.SyncBusy() then parts[#parts + 1] = "syncing" end
-	else
-		parts[#parts + 1] = "No guild ledger"
-	end
-	parts[#parts + 1] = "Writer: " .. (ns.live.writer or "none")
-	return table.concat(parts, "  ·  ")
-end
-
-local function RoundText(m)
-	local text = STATES[m.state] or m.state
-	if m.state == "reroll" then text = ("Reroll for %d"):format(m.slots or 1) end
-	if m.state == "decided" and not m.winners[1] then text = "No rolls" end
-	if m.state == "awarded" and m.rev then text = ("Awarded (revision %d)"):format(m.rev) end
-	if m.ends then text = ("%s: %ds"):format(text, math.max(math.ceil(m.ends - GetTime()), 0)) end
-	return text
-end
-
-local function Render()
-	for i, row in ipairs(rows) do
-		local line = lines[i + offset]
-		row.line = line
-		row:SetShown(line ~= nil)
-		if line then
-			for _, column in ipairs(COLUMNS) do
-				local cell = row.cells[column.key]
-				cell:SetText(line.cells[column.key] or "")
-				cell:SetTextColor(line.color[1], line.color[2], line.color[3])
-			end
-			for a, action in ipairs(row.actions) do
-				local spec = line.actions and line.actions[a]
-				action:SetShown(spec ~= nil)
-				if spec then
-					action:SetText(spec[1])
-					action.func = spec[2]
+	local collapsed = ns.settings.collapsed
+	for _, raid in ipairs(SortedKeys(raids, OTHER_RAID)) do
+		local group = raids[raid]
+		out[#out + 1] = {
+			header = 1, key = raid, text = ("%s (%d)"):format(raid, group.count), collapsed = collapsed[raid],
+			toggle = function() collapsed[raid] = not collapsed[raid] or nil end,
+		}
+		if not collapsed[raid] then
+			for _, boss in ipairs(SortedKeys(group.bosses, OTHER_BOSS)) do
+				local key = raid .. " / " .. boss
+				local items = group.bosses[boss]
+				if byBoss then
+					out[#out + 1] = {
+						header = 2, key = key, text = ("%s (%d)"):format(boss, #items), collapsed = collapsed[key],
+						toggle = function() collapsed[key] = not collapsed[key] or nil end,
+					}
+				end
+				if not (byBoss and collapsed[key]) then
+					table.sort(items, function(a, b)
+						if a.sort ~= b.sort then return a.sort > b.sort end
+						return a.item < b.item
+					end)
+					for _, line in ipairs(items) do out[#out + 1] = line end
 				end
 			end
 		end
 	end
+	return out
 end
 
-local function UpdateControls()
+-- Rows -----------------------------------------------------------------------------------------------------------
+
+local function ShowTooltip(owner, line)
+	if not line.item and not line.tip then return end
+	GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+	if line.item then
+		GameTooltip:SetItemByID(line.item)
+	else
+		GameTooltip_SetTitle(GameTooltip, line.tip[1])
+		for i = 2, #line.tip do GameTooltip_AddNormalLine(GameTooltip, line.tip[i]) end
+	end
+	for _, hint in ipairs(line.hints or {}) do GameTooltip_AddInstructionLine(GameTooltip, hint) end
+	GameTooltip:Show()
+end
+
+local function BuildRow(row)
+	row.built = true
+	row:SetHeight(ROW_HEIGHT)
+	row.Background = row:CreateTexture(nil, "BACKGROUND")
+	row.Background:SetAtlas("common-button-list-large")
+	row.Background:SetAllPoints()
+	row.Selected = row:CreateTexture(nil, "BACKGROUND", nil, 1)
+	row.Selected:SetAtlas("common-button-list-large-selected")
+	row.Selected:SetAllPoints()
+	row:SetHighlightAtlas("common-button-list-large-hover", "ADD")
+	-- Your own row keeps the hover glow, so it's easy to find.
+	row.Mine = row:CreateTexture(nil, "BACKGROUND", nil, 2)
+	row.Mine:SetAtlas("common-button-list-large-hover")
+	row.Mine:SetAllPoints()
+	row.Mine:SetBlendMode("ADD")
+	row.Mine:SetAlpha(0.6)
+
+	row.Icon = row:CreateTexture(nil, "ARTWORK")
+	row.Icon:SetSize(34, 34)
+	row.Icon:SetPoint("LEFT", 9, 0)
+	row.Title = row:CreateFontString(nil, "ARTWORK", "GameFontNormalMed1")
+	row.Title:SetJustifyH("LEFT")
+	row.Title:SetWordWrap(false)
+	row.Detail = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	row.Detail:SetJustifyH("LEFT")
+	row.Detail:SetWordWrap(false)
+	row.Detail:SetTextColor(GREY.r, GREY.g, GREY.b)
+	row.Columns = {}
+	for i = 1, DETAIL_COLUMNS do
+		local column = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		column:SetJustifyH("LEFT")
+		column:SetWordWrap(false)
+		column:SetTextColor(GREY.r, GREY.g, GREY.b)
+		row.Columns[i] = column
+	end
+	row.Value = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+	row.Value:SetPoint("TOPRIGHT", -12, -9)
+	row.Note = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	row.Note:SetPoint("TOPRIGHT", row.Value, "BOTTOMRIGHT", 0, -4)
+	row.Note:SetTextColor(GREY.r, GREY.g, GREY.b)
+	row.Check = row:CreateTexture(nil, "OVERLAY")
+	row.Check:SetAtlas("lootroll-icon-checkmark", true)
+	row.Check:SetPoint("RIGHT", row.Value, "LEFT", -4, 0)
+	-- "Click to roll", across the middle of your own row while you can roll.
+	row.Prompt = row:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	row.Prompt:SetPoint("CENTER")
+
+	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	row:SetScript("OnClick", function(self, button) if self.line and self.line.click then self.line.click(button) end end)
+	row:SetScript("OnEnter", function(self) if self.line then ShowTooltip(self, self.line) end end)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+local function InitRow(row, line)
+	if not row.built then BuildRow(row) end
+	row.line = line
+	local left = 12
+	row.Icon:SetShown(line.icon ~= nil)
+	if line.icon then
+		row.Icon:SetTexture(line.icon)
+		left = 50
+	end
+	-- Text runs to the right edge unless the row has a value or buttons there.
+	local right = ((line.value and line.value ~= "") or line.prompt) and -VALUE_WIDTH or -12
+	row.Title:ClearAllPoints()
+	row.Title:SetPoint("TOPLEFT", left, -9)
+	row.Title:SetPoint("RIGHT", right, 0)
+	row.Title:SetText(line.title)
+	row.Detail:ClearAllPoints()
+	row.Detail:SetPoint("TOPLEFT", row.Title, "BOTTOMLEFT", 0, -6)
+	row.Detail:SetPoint("RIGHT", right, 0)
+	row.Detail:SetText(line.detail or "")
+	row.Detail:SetShown(line.columns == nil)
+	-- Columns the same width on every row, so the rolls, pity and off-spec line up down the list.
+	local x = 0
+	for i, column in ipairs(row.Columns) do
+		column:ClearAllPoints()
+		column:SetPoint("TOPLEFT", row.Title, "BOTTOMLEFT", x, -6)
+		column:SetWidth(COLUMN_WIDTHS[i] - 4)
+		x = x + COLUMN_WIDTHS[i]
+		column:SetText(line.columns and line.columns[i] or "")
+		column:SetShown(line.columns ~= nil)
+	end
+	local showValue = true
+	row.Value:SetShown(showValue)
+	row.Value:SetText(line.value or "")
+	local valueColor = line.mineColor or (line.contender and NORMAL_FONT_COLOR) or HIGHLIGHT_FONT_COLOR
+	row.Value:SetTextColor(valueColor.r, valueColor.g, valueColor.b)
+	row.Note:SetShown(showValue)
+	row.Note:SetText(line.note or "")
+	row.Prompt:SetShown(line.prompt ~= nil)
+	row.Prompt:SetText(line.prompt or "")
+	row.Selected:SetShown(line.winner == true)
+	row.Mine:SetShown(line.mine == true)
+	row.Check:SetShown(line.winner == true and showValue)
+	row.Icon:SetDesaturated(line.desaturate == true)
+	row:SetAlpha(line.faded and 0.6 or 1)
+end
+
+-- The divider in a reroll, between the tied players and everyone else: the group finder's scroll line.
+local function InitDivider(divider)
+	if divider.built then return end
+	divider.built = true
+	local line = divider:CreateTexture(nil, "ARTWORK")
+	line:SetAtlas("groupfinder-ScrollLine")
+	line:SetPoint("LEFT", 4, 0)
+	line:SetPoint("RIGHT", -4, 0)
+	line:SetHeight(8)
+end
+
+-- Group headers, like the currency list's: a raid is a full-width bar with a plus or minus, a boss under it is
+-- indented with the campaign header's arrow. Clicking either folds it away, and that's remembered.
+local function BuildHeader(header)
+	header.built = true
+	header.Bar = header:CreateTexture(nil, "BACKGROUND")
+	header.Bar:SetAtlas("common-button-list-collapseExpand")
+	header.Bar:SetAllPoints()
+	header.BarHighlight = header:CreateTexture(nil, "HIGHLIGHT")
+	header.BarHighlight:SetAtlas("common-button-list-collapseExpand")
+	header.BarHighlight:SetAllPoints()
+	header.BarHighlight:SetBlendMode("ADD")
+	header.BarHighlight:SetAlpha(0.3)
+	header.StateIcon = header:CreateTexture(nil, "BORDER")
+	header.StateIcon:SetPoint("RIGHT", -8, -1)
+	header.Name = header:CreateFontString(nil, "OVERLAY", "GameFontNormalLeft")
+	header.Name:SetPoint("LEFT", 10, 0)
+	header.Arrow = header:CreateTexture(nil, "ARTWORK")
+	header.Arrow:SetPoint("LEFT", 25, 0)
+	header.SubName = header:CreateFontString(nil, "ARTWORK", "GameFontHighlightLeft")
+	header.SubName:SetPoint("LEFT", header.Arrow, "RIGHT", 4, 0)
+	header.SubName:SetPoint("RIGHT", -10, 0)
+	header:SetScript("OnClick", function(self)
+		self.line.toggle()
+		ns.RefreshWindow()
+	end)
+end
+
+local function InitHeader(header, line)
+	if not header.built then BuildHeader(header) end
+	header.line = line
+	local raid = line.header == 1
+	header.Bar:SetShown(raid)
+	header.BarHighlight:SetShown(raid)
+	header.StateIcon:SetShown(raid)
+	header.Name:SetShown(raid)
+	header.Arrow:SetShown(not raid)
+	header.SubName:SetShown(not raid)
+	if raid then
+		header.StateIcon:SetAtlas(line.collapsed and "common-button-list-plus" or "common-button-list-minus", true)
+		header.Name:SetText(line.text)
+	else
+		header.Arrow:SetAtlas(line.collapsed and "campaign_headericon_closed" or "campaign_headericon_open", true)
+		header.SubName:SetText(line.text)
+	end
+end
+
+-- Header, footer and tabs ------------------------------------------------------------------------------------------
+
+local function RoundText(m)
+	local text = STATES[m.state] or m.state
+	if m.state == "open" and ns.CanRoll() then text = "Roll now" end
+	if m.state == "reroll" then
+		local rerolls = m.round - 1
+		text = rerolls > ROLL_LOCK and ("Roll-locked! Reroll %d"):format(rerolls)
+			or rerolls > 1 and ("Reroll %d"):format(rerolls) or "Reroll"
+		if (m.slots or 1) > 1 then text = ("%s for %d"):format(text, m.slots) end
+	end
+	if m.state == "decided" and not m.winners[1] then text = "No rolls" end
+	if m.state == "awarded" and m.rev then text = ("Awarded (revision %d)"):format(m.rev) end
+	if m.ends then text = ("%s: %ds left"):format(text, math.max(math.ceil(m.ends - GetTime()), 0)) end
+	-- Where it dropped, when known.
+	local source = m.boss and (m.instance .. " - " .. m.boss) or m.instance
+	if source then text = Colored(source, GREY) .. "  ·  " .. text end
+	return text
+end
+
+-- The loot history's timer bar, emptying as the round runs out.
+local function UpdateTimer()
 	local m = ns.live.mirror
-	local writer = ns.AmWriter()
+	local timer = frame.Timer
+	if not (m and m.ends and m.duration and m.duration > 0) then return timer:Hide() end
+	local left = math.max(m.ends - GetTime(), 0) / m.duration
+	timer:Show()
+	timer.Fill:SetShown(left > 0)
+	timer.Fill:SetWidth(math.max((timer:GetWidth() - 4) * left, 1))
+end
+
+local function UpdateHeader()
+	local m = ns.live.mirror
+	if m then
+		frame:SetPortraitToAsset(ItemIcon(m.item) or ADDON_ICON)
+		local text = ns.ItemLink(m.item)
+		if m.copies > 1 then text = text .. Colored(" x" .. m.copies, HIGHLIGHT_FONT_COLOR) end
+		if m.greed then text = text .. Colored(" (greed)", HIGHLIGHT_FONT_COLOR) end
+		frame.ItemName:SetText(text)
+		frame.RoundText:SetText(RoundText(m))
+	else
+		frame:SetPortraitToAsset(ADDON_ICON)
+		frame.ItemName:SetText("")
+		frame.RoundText:SetText(ns.live.writer and ("Waiting for " .. ns.ColoredName(ns.live.writer) .. " to start a roll.") or "")
+	end
+	UpdateTimer()
+end
+
+local function UpdateFooter()
+	local parts = {}
+	if ns.ledger then
+		parts[1] = ("Revision %d"):format((ns.ledger:Revision()))
+		if ns.SyncBusy() then parts[2] = "syncing" end
+	else
+		parts[1] = "No guild ledger"
+	end
+	parts[#parts + 1] = "Writer: " .. (ns.live.writer and ns.ColoredName(ns.live.writer) or "none")
+	if ns.IsTestMode() then
+		table.insert(parts, 1, Colored(ns.ViewAsMember() and "Test mode, as a member" or "Test mode", RED_FONT_COLOR))
+	end
+	frame.Status:SetText(table.concat(parts, "  ·  "))
+	frame.Alert:SetShown(ns.warnings[1] ~= nil)
+end
+
+-- One main button for whatever the writer does next, as the base game's panels have, plus Cancel.
+local function UpdateButtons()
+	local m = ns.live.mirror
+	local writer = AsWriter()
 	local active = m and (m.state == "open" or m.state == "reroll")
 	local decided = m and m.state == "decided"
-	buttons.close:SetShown(writer and active)
-	buttons.award:SetShown(writer and decided and m.winners[1] ~= nil)
-	buttons.cancel:SetShown(writer and (active or decided))
-	buttons.greed:SetShown(writer and decided and not m.winners[1] and not m.greed and ns.IsBoE(m.item))
-	buttons.writer:SetShown(not writer and IsInGroup() and ns.IsOfficer(ns.PlayerName()))
-	tabs.loot:SetShown(ns.loot[1] ~= nil or view == "loot")
+	local label, action
+	if writer and active then
+		label, action = "Close round", ns.CloseRound
+	elseif writer and decided and m.winners[1] then
+		label, action = "Award", ns.Award
+	elseif writer and decided and not m.greed and ns.IsBoE(m.item) then
+		label, action = "Greed roll", function() ns.StartRoll(m.item, m.copies, true) end
+	elseif not writer and IsInGroup() and AsOfficer() then
+		label, action = "Be the writer", ns.ClaimWriter
+	end
+	frame.Primary:SetShown(label ~= nil)
+	frame.Primary:SetText(label or "")
+	frame.Primary.action = action
+	local cancel = writer and (active or decided) or false
+	frame.Cancel:SetShown(cancel)
+	frame.Primary:ClearAllPoints()
+	if cancel then
+		frame.Primary:SetPoint("RIGHT", frame.Cancel, "LEFT", -4, 0)
+	else
+		frame.Primary:SetPoint("BOTTOMRIGHT", -10, 12)
+	end
+end
+
+local function UpdateTabs()
+	local above
+	for _, tab in ipairs(frame.Tabs) do
+		tab:SetChecked(tab.view == view)
+		if tab.view == "loot" then tab:SetShown(ns.loot.groups[1] ~= nil or view == "loot") end
+		if tab:IsShown() then
+			tab:ClearAllPoints()
+			if above then
+				tab:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -2)
+			else
+				tab:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, -60)
+			end
+			above = tab
+		end
+	end
 end
 
 function ns.RefreshWindow()
@@ -163,170 +559,389 @@ function ns.RefreshWindow()
 		lines = SessionLines()
 	elseif view == "loot" then
 		lines = LootLines()
-	else
+	elseif view == "pity" then
 		lines = PityLines()
-	end
-	offset = math.max(math.min(offset, #lines - ROW_COUNT), 0)
-	for key, header in pairs(headers) do header:SetText(HEADERS[view][key] or "") end
-	frame.status:SetText(StatusText())
-	local m = ns.live.mirror
-	if m then
-		frame.item:SetText(ns.ItemLink(m.item) .. (m.copies > 1 and (" x" .. m.copies) or "") .. (m.greed and " (greed)" or ""))
-		frame.icon:SetTexture(select(10, C_Item.GetItemInfo(m.item)))
-		frame.round:SetText(RoundText(m))
 	else
-		frame.item:SetText("No roll in progress")
-		frame.icon:SetTexture(nil)
-		frame.round:SetText("")
+		lines = {}
 	end
-	local warning = ns.warnings[#ns.warnings]
-	frame.warning:SetText(warning and warning.text or "")
-	UpdateControls()
-	Render()
+	local options = view == "options"
+	frame.ScrollBox:SetShown(not options)
+	frame.ScrollBar:SetShown(not options)
+	frame.Options:SetShown(options)
+	if options then frame.Options:Refresh() end
+	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
+	frame.Empty:SetText(lines[1] and "" or EMPTY[view])
+	UpdateHeader()
+	UpdateFooter()
+	UpdateButtons()
+	UpdateTabs()
 end
 
 local function SetView(name)
-	view, offset = name, 0
+	view = name
 	ns.RefreshWindow()
 end
 ns.SetWindowView = SetView
 
-local function CreateRow(index)
-	local row = CreateFrame("Button", nil, frame)
-	row:SetSize(WIDTH - 20, ROW_HEIGHT)
-	row:SetPoint("TOPLEFT", 10, -128 - (index - 1) * ROW_HEIGHT)
-	local highlight = row:CreateTexture(nil, "HIGHLIGHT")
-	highlight:SetAllPoints()
-	highlight:SetColorTexture(1, 1, 1, 0.08)
-	row.cells = {}
-	local x = 0
-	for _, column in ipairs(COLUMNS) do
-		local cell = Text(row, nil, column.justify)
-		cell:SetPoint("LEFT", x, 0)
-		cell:SetWidth(column.width - 4)
-		row.cells[column.key] = cell
-		x = x + column.width
+local function Texture(parent, layer, atlas, subLevel)
+	local texture = parent:CreateTexture(nil, layer, nil, subLevel)
+	texture:SetAtlas(atlas)
+	return texture
+end
+
+-- The window drags from its frame, title bar and header. Those are covered by regions that take the mouse (the
+-- item's tooltip, the list), so each is a handle that moves the window.
+-- The Options tab: the same options as the game's settings page (Options.lua), with the base game's own controls.
+-- Officer options only show for officers who tick the box in the bottom right corner.
+local function CreateOptions(parent)
+	local panel = CreateFrame("Frame", nil, parent)
+	panel:SetPoint("TOPLEFT", 20, -92)
+	panel:SetPoint("BOTTOMRIGHT", -20, 50)
+	local rows = {} -- { option, height, regions = { region, x, y offset }, update }
+
+	local function Tooltip(region, option)
+		region:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip_SetTitle(GameTooltip, option.name)
+			GameTooltip_AddNormalLine(GameTooltip, option.tooltip, true)
+			GameTooltip:Show()
+		end)
+		region:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	end
-	row.actions = {}
-	for a = 1, 2 do
-		local action = Button(row, "", ACTION_WIDTH, function(self) if self.func then self.func() end end)
-		action:SetHeight(ROW_HEIGHT)
-		action:SetPoint("RIGHT", -(a - 1) * (ACTION_WIDTH + 4), 0)
-		row.actions[a] = action
+
+	for _, option in ipairs(ns.OPTIONS) do
+		local row = { option = option, regions = {} }
+		if option.section then
+			local header = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+			header:SetText(option.section)
+			row.regions[1] = { header, "TOPLEFT", 0, -6 }
+			row.height = 28
+		elseif option.kind == "checkbox" then
+			local box = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+			box.Text:SetText(option.name)
+			box.Text:SetFontObject("GameFontHighlight")
+			box:SetScript("OnClick", function(self) ns.SetOption(option.key, self:GetChecked() and true or false) end)
+			Tooltip(box, option)
+			row.regions[1] = { box, "TOPLEFT", 4, 0 }
+			row.update = function() box:SetChecked(ns.settings[option.key]) end
+			row.height = 28
+		elseif option.kind == "slider" then
+			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+			label:SetText(option.name)
+			-- The slider's value is drawn to its right, so the slider stops short of the edge to leave room for it.
+			local slider = CreateFrame("Frame", nil, panel, "MinimalSliderWithSteppersTemplate")
+			slider:SetSize(150, 20)
+			slider:RegisterCallback(MinimalSliderWithSteppersMixin.Event.OnValueChanged, function(_, value)
+				if value ~= ns.settings[option.key] then ns.SetOption(option.key, value) end
+			end, panel)
+			Tooltip(slider, option)
+			row.regions[1] = { label, "TOPLEFT", 8, -6 }
+			row.regions[2] = { slider, "TOPRIGHT", -56, -2 }
+			row.update = function()
+				slider:Init(ns.settings[option.key], option.min, option.max, (option.max - option.min) / option.step,
+					{ [MinimalSliderWithSteppersMixin.Label.Right] = option.format })
+			end
+			row.height = 30
+		elseif option.kind == "dropdown" then
+			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+			label:SetText(option.name)
+			local dropdown = CreateFrame("DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
+			dropdown:SetWidth(150)
+			dropdown:SetupMenu(function(_, root)
+				for _, choice in ipairs(option.choices) do
+					root:CreateRadio(choice[2], function() return ns.settings[option.key] == choice[1] end,
+						function() ns.SetOption(option.key, choice[1]) end)
+				end
+			end)
+			Tooltip(dropdown, option)
+			row.regions[1] = { label, "TOPLEFT", 8, -6 }
+			row.regions[2] = { dropdown, "TOPRIGHT", -4, 0 }
+			row.update = function() dropdown:GenerateMenu() end
+			row.height = 32
+		end
+		rows[#rows + 1] = row
 	end
-	row:SetScript("OnClick", function(self)
-		if self.line and self.line.click then self.line.click() end
+
+	-- Officers choose whether to see the officer options, in the bottom right corner.
+	local officer = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+	officer:SetPoint("BOTTOMRIGHT", 0, 0)
+	officer.Text:ClearAllPoints()
+	officer.Text:SetPoint("RIGHT", officer, "LEFT", -2, 1)
+	officer.Text:SetText("Officer options")
+	officer:SetScript("OnClick", function(self) ns.SetOption("showOfficerOptions", self:GetChecked() and true or false) end)
+	Tooltip(officer, { name = "Officer options",
+		tooltip = "Show the options for running rolls: announcements, roll times and which loot is listed." })
+	panel.OfficerToggle = officer
+
+	function panel:Refresh()
+		local isOfficer = AsOfficer()
+		local showOfficer = isOfficer and ns.settings.showOfficerOptions
+		officer:SetShown(isOfficer)
+		officer:SetChecked(showOfficer)
+		local y = 0
+		for _, row in ipairs(rows) do
+			local shown = showOfficer or not row.option.officer
+			for _, placed in ipairs(row.regions) do
+				local region, point, x, offset = placed[1], placed[2], placed[3], placed[4]
+				region:ClearAllPoints()
+				region:SetPoint(point, x, y + offset)
+				region:SetShown(shown)
+			end
+			if shown then
+				if row.update then row.update() end
+				y = y - row.height
+			end
+		end
+	end
+	panel:Hide()
+	return panel
+end
+
+-- Crops the background art to the area it fills, keeping the art's own shape, so a taller window shows less of its
+-- sides instead of stretching it. The crop centres on a point 60% of the way across, where the art is most
+-- interesting, rather than its middle.
+local function FitBackground()
+	local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("groupfinder-background")
+	local background = frame and frame.Background
+	if not info or not background then return end
+	local width, height = background:GetWidth(), background:GetHeight()
+	if not width or not height or width <= 0 or height <= 0 then return end
+	-- As NineSlice does: crop coordinates are in the art's whole file, so the texture shows the file, not the atlas.
+	local source = info.file or info.filename
+	if not source then return end
+	background:SetTexture(source)
+	local left, right, top, bottom = info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord
+	local artShape, areaShape = info.width / info.height, width / height
+	if areaShape < artShape then
+		-- Centred on the art's focus point, but never past either edge.
+		local span = right - left
+		local visible = span * areaShape / artShape
+		local start = left + span * BACKGROUND_FOCUS - visible / 2
+		start = math.max(left, math.min(start, right - visible))
+		background:SetTexCoord(start, start + visible, top, bottom)
+	else
+		local half = (bottom - top) * artShape / areaShape / 2
+		local middle = (top + bottom) / 2
+		background:SetTexCoord(left, right, middle - half, middle + half)
+	end
+end
+
+local function MakeDragHandle(region)
+	region:EnableMouse(true)
+	region:RegisterForDrag("LeftButton")
+	region:SetScript("OnDragStart", function() frame:StartMoving() end)
+	region:SetScript("OnDragStop", function()
+		frame:StopMovingOrSizing()
+		local point, _, relativePoint, x, y = frame:GetPoint()
+		ns.settings.position = { point = point, relativePoint = relativePoint, x = x, y = y }
 	end)
-	row:SetScript("OnEnter", function(self)
-		local line = self.line
-		if not line or not (line.link or line.tip) then return end
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		if line.link then GameTooltip:SetHyperlink(line.link) else GameTooltip:SetText(line.tip) end
-		GameTooltip:Show()
-	end)
-	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	return row
 end
 
 local function Create()
-	frame = CreateFrame("Frame", "PitifulLootFrame", UIParent)
-	frame:SetSize(WIDTH, HEIGHT)
+	frame = CreateFrame("Frame", "PitifulLootFrame", UIParent, "PortraitFrameTemplate")
+	frame:SetSize(WIDTH, ns.settings.height or HEIGHT)
+	frame:SetResizable(true)
+	frame:SetResizeBounds(WIDTH, MIN_HEIGHT, WIDTH, MAX_HEIGHT)
 	local position = ns.settings.position
 	if position then
-		frame:SetPoint(position.point, UIParent, position.point, position.x, position.y)
+		frame:SetPoint(position.point, UIParent, position.relativePoint or position.point, position.x, position.y)
 	else
 		frame:SetPoint("CENTER")
 	end
+	frame:SetToplevel(true)
 	frame:SetFrameStrata("HIGH")
+	frame:SetClampedToScreen(true)
 	frame:SetMovable(true)
+	frame:SetDontSavePosition(true) -- the position is kept in the settings, not the client's layout cache
 	frame:EnableMouse(true)
-	frame:RegisterForDrag("LeftButton")
-	frame:SetScript("OnDragStart", frame.StartMoving)
-	frame:SetScript("OnDragStop", function(self)
-		self:StopMovingOrSizing()
-		local point, _, _, x, y = self:GetPoint()
-		ns.settings.position = { point = point, x = x, y = y }
-	end)
-	frame:EnableMouseWheel(true)
-	frame:SetScript("OnMouseWheel", function(_, delta)
-		offset = math.max(math.min(offset - delta * 3, #lines - ROW_COUNT), 0)
-		Render()
-	end)
+	MakeDragHandle(frame)
+	MakeDragHandle(frame.TitleContainer)
 	table.insert(UISpecialFrames, "PitifulLootFrame")
+	frame:SetTitle("Pitiful Loot")
 
-	local background = frame:CreateTexture(nil, "BACKGROUND")
-	background:SetAllPoints()
-	background:SetColorTexture(0.05, 0.05, 0.07, 0.92)
+	-- The Who list's layout: a stone header over the group finder background, framed by the inside border.
+	local background = Texture(frame, "BACKGROUND", "groupfinder-background", 1)
+	frame.Background = background
+	background:SetPoint("TOPLEFT", 4, -80)
+	background:SetPoint("BOTTOMRIGHT", -4, 3)
+	local header = Texture(frame, "BACKGROUND", "groupfinder-Stat-StoneBG", 2)
+	header:SetPoint("TOPLEFT", 2, -21)
+	header:SetPoint("BOTTOMRIGHT", background, "TOPRIGHT", 0, -7)
+	local inside = Texture(frame, "BORDER", "common-insideframe")
+	inside:SetPoint("TOPLEFT", 3, -78)
+	inside:SetPoint("BOTTOMRIGHT", -4, 3)
+	local topLine = Texture(frame, "ARTWORK", "groupfinder-ScrollLine")
+	topLine:SetPoint("LEFT", background, "TOPLEFT", 0, -1)
+	topLine:SetPoint("RIGHT", background, "TOPRIGHT", 0, -1)
+	topLine:SetHeight(8)
+	local bottomLine = Texture(frame, "ARTWORK", "groupfinder-ScrollLine")
+	bottomLine:SetPoint("LEFT", frame, "BOTTOMLEFT", 4, 42)
+	bottomLine:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -4, 42)
+	bottomLine:SetHeight(8)
 
-	local title = Text(frame, "GameFontNormal")
-	title:SetPoint("TOPLEFT", 12, -10)
-	title:SetText("Pitiful Loot")
-	local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", 0, 0)
-
-	frame.status = Text(frame)
-	frame.status:SetPoint("TOPLEFT", 12, -30)
-
-	frame.icon = frame:CreateTexture(nil, "ARTWORK")
-	frame.icon:SetSize(22, 22)
-	frame.icon:SetPoint("TOPLEFT", 12, -50)
-	frame.item = Text(frame, "GameFontNormal")
-	frame.item:SetPoint("LEFT", frame.icon, "RIGHT", 6, 0)
-	frame.round = Text(frame, "GameFontNormal", "RIGHT")
-	frame.round:SetPoint("TOPRIGHT", -12, -54)
-
-	local tabX = 12
-	for _, tab in ipairs({ { "session", "Roll" }, { "loot", "Loot" }, { "pity", "My pity" } }) do
-		local button = Button(frame, tab[2], 80, function() SetView(tab[1]) end)
-		button:SetPoint("TOPLEFT", tabX, -80)
-		tabs[tab[1]] = button
-		tabX = tabX + 84
-	end
-
-	local x = 10
-	for _, column in ipairs(COLUMNS) do
-		local header = Text(frame, "GameFontNormalSmall", column.justify)
-		header:SetPoint("TOPLEFT", x, -110)
-		header:SetWidth(column.width - 4)
-		headers[column.key] = header
-		x = x + column.width
-	end
-
-	for i = 1, ROW_COUNT do rows[i] = CreateRow(i) end
-
-	frame.warning = Text(frame)
-	frame.warning:SetPoint("BOTTOMLEFT", 12, 38)
-	frame.warning:SetWidth(WIDTH - 24)
-	frame.warning:SetTextColor(1, 0.25, 0.25)
-
-	buttons.close = Button(frame, "Close round", 100, function() ns.CloseRound() end)
-	buttons.award = Button(frame, "Award", 100, function() ns.Award() end)
-	buttons.greed = Button(frame, "Greed roll", 100, function()
+	-- The item being rolled for, its round, and the round's timer.
+	frame.ItemName = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalMed2")
+	frame.ItemName:SetPoint("TOPLEFT", 62, -30)
+	frame.ItemName:SetPoint("RIGHT", -40, 0)
+	frame.ItemName:SetJustifyH("LEFT")
+	frame.ItemName:SetWordWrap(false)
+	frame.RoundText = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	frame.RoundText:SetPoint("TOPLEFT", frame.ItemName, "BOTTOMLEFT", 0, -4)
+	frame.RoundText:SetJustifyH("LEFT")
+	local itemHit = CreateFrame("Button", nil, frame)
+	itemHit:SetPoint("TOPLEFT", 0, 0)
+	itemHit:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", WIDTH - 40, -56)
+	itemHit:SetScript("OnEnter", function(self)
 		local m = ns.live.mirror
-		ns.StartRoll(m.item, m.copies, true)
+		if m then ShowTooltip(self, { item = m.item }) end
 	end)
-	buttons.cancel = Button(frame, "Cancel", 80, function() ns.CancelRoll() end)
-	buttons.writer = Button(frame, "Be the writer", 110, function() ns.ClaimWriter() end)
-	buttons.close:SetPoint("BOTTOMLEFT", 10, 10)
-	buttons.award:SetPoint("BOTTOMLEFT", 10, 10)
-	buttons.greed:SetPoint("BOTTOMLEFT", 114, 10)
-	buttons.cancel:SetPoint("BOTTOMRIGHT", -10, 10)
-	buttons.writer:SetPoint("BOTTOMRIGHT", -94, 10)
+	itemHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	MakeDragHandle(itemHit)
+
+	local timer = CreateFrame("Frame", nil, frame)
+	timer:SetPoint("TOPLEFT", 62, -60)
+	timer:SetPoint("RIGHT", -14, 0)
+	timer:SetHeight(13)
+	Texture(timer, "BACKGROUND", "lootroll-timer-background"):SetAllPoints()
+	timer.Fill = Texture(timer, "ARTWORK", "lootroll-timer-fill")
+	timer.Fill:SetPoint("LEFT", 2, 0)
+	timer.Fill:SetHeight(9)
+	Texture(timer, "OVERLAY", "lootroll-timer-border"):SetAllPoints()
+	frame.Timer = timer
+
+	-- A warning sign while something didn't match what this client saw (6.3).
+	local alert = CreateFrame("Button", nil, frame)
+	alert:SetSize(22, 22)
+	alert:SetPoint("TOPRIGHT", -12, -30)
+	alert:SetNormalTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
+	alert:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip_SetTitle(GameTooltip, "Something didn't match", RED_FONT_COLOR)
+		for i = math.max(#ns.warnings - WARNINGS_SHOWN + 1, 1), #ns.warnings do
+			GameTooltip_AddNormalLine(GameTooltip, ns.warnings[i].text)
+		end
+		GameTooltip_AddInstructionLine(GameTooltip, "Click to dismiss.")
+		GameTooltip:Show()
+	end)
+	alert:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	alert:SetScript("OnClick", function()
+		ns.warnings = {}
+		GameTooltip:Hide()
+		ns.RefreshWindow()
+	end)
+	frame.Alert = alert
+
+	-- The list, with the minimal scroll bar the base game's lists use.
+	frame.ScrollBox = CreateFrame("Frame", nil, frame, "WowScrollBoxList")
+	frame.ScrollBox:SetPoint("TOPLEFT", 12, -88)
+	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, 50)
+	frame.ScrollBar = CreateFrame("EventFrame", nil, frame, "MinimalScrollBar")
+	frame.ScrollBar:SetPoint("TOPLEFT", frame.ScrollBox, "TOPRIGHT", 5, -4)
+	frame.ScrollBar:SetPoint("BOTTOMLEFT", frame.ScrollBox, "BOTTOMRIGHT", 5, -1)
+	-- Headers are CheckButtons and rows Buttons, so the list keeps a separate pool of each.
+	local scrollView = CreateScrollBoxListLinearView(0, 0, 0, 0, 2)
+	scrollView:SetElementExtentCalculator(function(_, line)
+		return line.header and HEADER_HEIGHT or (line.divider and DIVIDER_HEIGHT) or ROW_HEIGHT
+	end)
+	scrollView:SetElementFactory(function(factory, line)
+		if line.header then
+			factory("CheckButton", InitHeader)
+		elseif line.divider then
+			factory("Frame", InitDivider)
+		else
+			factory("Button", InitRow)
+		end
+	end)
+	ScrollUtil.InitScrollBoxListWithScrollBar(frame.ScrollBox, frame.ScrollBar, scrollView)
+	frame.Options = CreateOptions(frame)
+
+	local resize = CreateFrame("Button", nil, frame)
+	resize:SetSize(32, 12)
+	resize:SetPoint("TOP", frame, "BOTTOM", 0, 3)
+	resize:SetFrameLevel(frame:GetFrameLevel() + 10)
+	resize:RegisterForClicks("RightButtonUp")
+	local handle = resize:CreateTexture(nil, "OVERLAY")
+	handle:SetAtlas("lootroll-resizehandle")
+	handle:SetAllPoints()
+	resize:SetScript("OnMouseDown", function(_, button)
+		if button == "LeftButton" then frame:StartSizing("BOTTOM") end
+	end)
+	resize:SetScript("OnMouseUp", function(_, button)
+		if button ~= "LeftButton" then return end
+		frame:StopMovingOrSizing()
+		ns.settings.height = math.floor(frame:GetHeight() + 0.5)
+	end)
+	resize:SetScript("OnClick", function()
+		frame:SetHeight(HEIGHT)
+		ns.settings.height = nil
+	end)
+	resize:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+		GameTooltip_SetTitle(GameTooltip, "Resize")
+		GameTooltip_AddInstructionLine(GameTooltip, "Drag to make the window taller or shorter.")
+		GameTooltip_AddInstructionLine(GameTooltip, "Right-click to reset its size.")
+		GameTooltip:Show()
+	end)
+	resize:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	frame.Resize = resize
+	frame.Empty = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	frame.Empty:SetPoint("TOP", frame.ScrollBox, "TOP", 0, -24)
+	frame.Empty:SetWidth(WIDTH - 60)
+	frame.Empty:SetTextColor(GREY.r, GREY.g, GREY.b)
+
+	frame.Status = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+	frame.Status:SetPoint("BOTTOMLEFT", 14, 17)
+	frame.Status:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -200, 0)
+	frame.Status:SetJustifyH("LEFT")
+	frame.Status:SetWordWrap(false)
+	frame.Cancel = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	frame.Cancel:SetSize(88, 22)
+	frame.Cancel:SetPoint("BOTTOMRIGHT", -10, 12)
+	frame.Cancel:SetText("Cancel")
+	frame.Cancel:SetScript("OnClick", function() ns.CancelRoll() end)
+	frame.Primary = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	frame.Primary:SetSize(110, 22)
+	frame.Primary:SetScript("OnClick", function(self) if self.action then self.action() end end)
+
+	-- Large side tabs down the right, as the group finder has.
+	frame.Tabs = {}
+	for i, info in ipairs(VIEWS) do
+		local tab = CreateFrame("Frame", nil, frame, "LargeSideTabButtonTemplate")
+		tab.view = info.key
+		tab.tooltipText = info.label
+		tab.Icon:SetTexture(info.icon)
+		tab:SetFillToInterior(true)
+		tab:SetCustomOnMouseUpHandler(function(_, button, upInside)
+			if button == "LeftButton" and upInside then SetView(tab.view) end
+		end)
+		if i == 1 then
+			tab:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, -60)
+		else
+			tab:SetPoint("TOPLEFT", frame.Tabs[i - 1], "BOTTOMLEFT", 0, -2)
+		end
+		frame.Tabs[i] = tab
+	end
 
 	local elapsed = 0
 	frame:SetScript("OnUpdate", function(_, delta)
 		elapsed = elapsed + delta
-		if elapsed < 0.25 then return end
+		if elapsed < 0.1 then return end
 		elapsed = 0
 		local m = ns.live.mirror
-		if m and m.ends then frame.round:SetText(RoundText(m)) end
+		if m and m.ends then
+			frame.RoundText:SetText(RoundText(m))
+			UpdateTimer()
+		end
 	end)
 	frame:SetScript("OnShow", ns.RefreshWindow)
+	frame:SetScript("OnSizeChanged", FitBackground)
+	FitBackground()
 	frame:Hide()
 end
 
-function ns.ShowWindow()
+function ns.ShowWindow(tab)
 	if not frame then Create() end
+	if tab then view = tab end
 	frame:Show()
 	ns.RefreshWindow()
 end
@@ -339,21 +954,50 @@ function ns.ToggleWindow()
 	end
 end
 
--- The rows on show, for tests: each one's cell texts.
+-- The addon compartment by the minimap (## AddonCompartmentFunc): left click for the window, right for settings.
+function PitifulLoot_OnAddonCompartmentClick(_, button)
+	if button == "RightButton" then
+		ns.OpenOptions()
+	else
+		ns.ToggleWindow()
+	end
+end
+
+-- For tests: the lines on show, and the window.
 function ns.WindowLines()
 	return lines
 end
 
-for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "WARNINGS", "SYNC_CHANGED" }) do
-	ns.Listen(name, ns.RefreshWindow)
+function ns.Window()
+	return frame
 end
-ns.Listen("LOOT_CHANGED", function()
-	if ns.loot[1] and ns.AmWriter() then
-		view = "loot"
-		ns.ShowWindow()
-	elseif view == "loot" and not ns.loot[1] then
+
+local refreshQueued = false
+local function RefreshSoon()
+	if refreshQueued or not (frame and frame:IsShown()) then return end
+	refreshQueued = true
+	C_Timer.After(0, function()
+		refreshQueued = false
+		ns.RefreshWindow()
+	end)
+end
+
+for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "WARNINGS", "SYNC_CHANGED" }) do
+	ns.Listen(name, RefreshSoon)
+end
+-- New loot opens its own group and folds the others away, and takes the writer to the Loot tab. An item's roll
+-- moving on only redraws it.
+ns.Listen("LOOT_CHANGED", function(newGroup)
+	if newGroup then
+		for _, group in ipairs(ns.loot.groups) do lootCollapsed[group.key] = group ~= newGroup or nil end
+		if AsWriter() then return ns.ShowWindow("loot") end
+	elseif view == "loot" and not ns.loot.groups[1] then
 		view = "session"
 	end
-	ns.RefreshWindow()
+	RefreshSoon()
 end)
-ns.On("GET_ITEM_INFO_RECEIVED", ns.RefreshWindow)
+
+function ns.WindowView()
+	return view
+end
+ns.On("GET_ITEM_INFO_RECEIVED", RefreshSoon)

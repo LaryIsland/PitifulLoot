@@ -79,6 +79,7 @@ function ns.AppendEntry(entry)
 	if not ns.IsOfficer(ns.PlayerName()) then return false, "only officers can record entries" end
 	if ns.SyncBusy() then return false, "your ledger is still syncing" end
 	local ok, err = ns.ledger:Append(entry)
+	ns.Capture("append", entry, ok, err)
 	if not ok then return false, err end
 	ns.Send(SYNC, "entry", { entry = entry }, "GUILD")
 	ns.Fire("LEDGER_CHANGED")

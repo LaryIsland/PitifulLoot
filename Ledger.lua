@@ -10,7 +10,7 @@ local State = {}
 State.__index = State
 
 local function NewState()
-	return setmetatable({ pity = {}, greed = {}, won = {}, left = {} }, State)
+	return setmetatable({ pity = {}, greed = {}, won = {}, left = {}, sources = {} }, State)
 end
 
 local function WeeksAway(left, now)
@@ -45,6 +45,12 @@ local function IsCount(n)
 	return type(n) == "number" and n % 1 == 0 and n >= 1
 end
 
+-- Where an item drops (the raid, and the boss if known), from the latest entry that says, for grouping pity by raid.
+local function RecordSource(state, e)
+	if type(e.instance) ~= "string" then return end
+	state.sources[e.item] = { instance = e.instance, boss = type(e.boss) == "string" and e.boss or nil }
+end
+
 -- Each entry type checks everything before it changes anything, and returns an error if the entry is invalid.
 local Apply = {}
 
@@ -58,9 +64,12 @@ function Apply.award(state, e)
 		if not e.entrants[id] then return "a roll from " .. tostring(id) .. " with no entrant" end
 	end
 	for id, entrant in pairs(e.entrants) do
-		if not first[id] then return id .. " is an entrant but didn't roll" end
-		if state:HasWon(id, e.item) then return id .. " has already won this item" end
-		if entrant.pity ~= state:GetPity(id, e.item, e.greed, e.time) then return id .. "'s pity doesn't match the table" end
+		local who = type(entrant.name) == "string" and entrant.name or id
+		if not first[id] then return who .. " is an entrant but didn't roll" end
+		if state:HasWon(id, e.item) then return who .. " has already won this item" end
+		if entrant.pity ~= state:GetPity(id, e.item, e.greed, e.time) then
+			return ("%s's pity (%d) doesn't match the table (%d)"):format(who, entrant.pity, state:GetPity(id, e.item, e.greed, e.time))
+		end
 	end
 
 	-- The winners have to be the ones the recorded rolls produce.
@@ -85,15 +94,17 @@ function Apply.award(state, e)
 	end
 	if #e.winners ~= #session.winners then return "the winners don't match the rolls" end
 
-	-- Everyone who rolled and didn't win gains pity, once, whatever happened in rerolls (4.1).
+	-- Everyone who rolled and didn't win gains pity, once, whatever happened in rerolls (4.1). Only a need win locks the
+	-- winner out of the item; a greed winner can still need-roll it if it becomes an upgrade (4.8).
 	local store = e.greed and state.greed or state.pity
 	for id, entrant in pairs(e.entrants) do
 		if isWinner[id] then
-			Set(state.won, id, e.item, true)
+			if not e.greed then Set(state.won, id, e.item, true) end
 		else
 			Set(store, id, e.item, ns.AddPity(entrant.pity))
 		end
 	end
+	RecordSource(state, e)
 end
 
 -- An officer's correction: sets pity on an item, and/or lifts a lockout given by mistake.
@@ -104,6 +115,7 @@ function Apply.adjust(state, e)
 	end
 	if e.pity ~= nil then Set(e.greed and state.greed or state.pity, e.id, e.item, e.pity) end
 	if e.unlock then Set(state.won, e.id, e.item, nil) end
+	RecordSource(state, e)
 end
 
 function Apply.leave(state, e)

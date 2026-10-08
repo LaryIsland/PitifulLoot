@@ -1,3 +1,6 @@
 {
-	"library": ["libs/"]
+	"library": ["libs/"],
+	"globals": {
+		"write": ["PitifulLoot_OnAddonCompartmentClick"]
+	}
 }
