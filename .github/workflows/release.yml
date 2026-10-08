@@ -1,0 +1,39 @@
+# Packages the addon with the BigWigs packager when a tag is pushed, and
+# publishes the package as a GitHub release.
+name: Package and release
+
+on:
+  push:
+    tags:
+      - '**'
+
+# Creating the GitHub release needs write access to the repository's contents.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    # Uploading to CurseForge also needs CF_API_KEY set from a repository secret,
+    # and the project ID in the TOC (## X-Curse-Project-ID) or the -p argument.
+    env:
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # The whole history is needed for the automatic changelog.
+      - name: Clone project
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The packager needs Subversion to fetch the Ace3 externals in .pkgmeta from WowAce.
+      - name: Install Subversion
+        run: sudo apt-get update && sudo apt-get install -y subversion
+
+      # The file name and upload label leave out the game type the packager adds
+      # by default ({classic}, which would be "-forever").
+      - name: Package and release
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -n "{package-name}-{project-version}{nolib}:{project-version}{nolib}"

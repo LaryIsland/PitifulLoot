@@ -1,0 +1,24 @@
+## Interface: 16001
+## Title: Pitiful Loot
+## Author: LaryIsland
+## Version: @project-version@
+## Notes: Raid loot rolls with a per-item pity timer for WoW Forever
+## Category: Raid
+## SavedVariables: PitifulLootDB
+## OptionalDeps: Ace3
+
+embeds.xml
+Core.lua
+Rules.lua
+Serialize.lua
+Ranking.lua
+Ledger.lua
+Odds.lua
+Rolls.lua
+Roster.lua
+Comm.lua
+Sync.lua
+Session.lua
+Loot.lua
+UI.lua
+Commands.lua

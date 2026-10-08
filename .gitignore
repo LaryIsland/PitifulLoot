@@ -1,0 +1,5 @@
+# Libraries, pulled in when packaging.
+libs/
+
+# Packages built by the BigWigs packager.
+.release/
