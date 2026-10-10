@@ -5,7 +5,7 @@ local _, ns = ...
 -- which either side's client sees and tells the group, so everyone's Loot tab stays up to date. Officers can also
 -- mark one done by hand. A looted BoP item can only be traded for a while, so each shows how long is left.
 -- An officer holding copies can open a trade with the winner from the Loot tab, and whoever opens a trade between
--- them, the copies go into it. Each side accepts it by hand, unless they've chosen to have handovers accepted for them.
+-- them, the copies go into it. Each side still clicks Trade: the game doesn't let addons accept a trade.
 --
 --   traded {sid, id}   the copy `id` won in roll `sid` has reached them; from an officer, or from the winner
 
@@ -72,7 +72,6 @@ end)
 -- item that went to its winner, either way round, is done: the oldest copy still waiting.
 local trade
 local FILL_DELAY = 0.1 -- seconds between items put in the trade window, so each lands before the next is picked up
-local ACCEPT_DELAY = 0.5 -- seconds a trade must stay the same before it's accepted for you
 local BAGS = NUM_BAG_SLOTS or 4 -- the backpack is bag 0
 -- A looted BoP item's tooltip says how long it can still be traded for, as a pattern.
 local TRADE_TIME = BIND_TRADE_TIME_REMAINING
@@ -148,14 +147,16 @@ local function FillTrade()
 end
 
 -- Opens a trade with a winner from the Loot tab, which puts in what you hold for them once it's open.
+-- The winner can be anyone in your group, or whoever you're targeting.
 function ns.OfferTrade(id)
 	local member = ns.GroupMember(id)
-	if not member then return ns.Print(("%s isn't in your group."):format(ns.ColoredName(id))) end
+	local unit = member and member.unit or (UnitGUID("target") == id and "target") or nil
+	if not unit then return ns.Print(("%s isn't in your group or targeted."):format(ns.ColoredName(id))) end
 	if trade and not trade.closed and trade.partner == id then return FillTrade() end
-	if not CheckInteractDistance(member.unit, 2) then
+	if not CheckInteractDistance(unit, 2) then
 		return ns.Print(("%s is too far away to trade with."):format(ns.ColoredName(id)))
 	end
-	InitiateTrade(member.unit)
+	InitiateTrade(unit)
 end
 
 local function Oldest(item, id)
@@ -168,45 +169,6 @@ local function Oldest(item, id)
 	return found
 end
 
--- Whether every one of the items is a copy awaiting trade to `id`, each copy counted once.
-local function AllOwed(items, id)
-	local owed = {}
-	for _, pending in ipairs(ns.PendingTrades()) do
-		if pending.id == id then owed[pending.item] = (owed[pending.item] or 0) + 1 end
-	end
-	for _, item in ipairs(items) do
-		if (owed[item] or 0) < 1 then return false end
-		owed[item] = owed[item] - 1
-	end
-	return true
-end
-
--- Whether the trade is nothing but a handover: you put up only copies owed to the other player and they put up
--- nothing, or they put up only copies owed to you and you put up nothing. No money either way.
-local function IsHandover()
-	if not trade or trade.closed or not trade.partner then return false end
-	if GetPlayerTradeMoney() > 0 or GetTargetTradeMoney() > 0 then return false end
-	if trade.gave[1] and not trade.got[1] then return AllOwed(trade.gave, trade.partner) end
-	if trade.got[1] and not trade.gave[1] then return AllOwed(trade.got, UnitGUID("player")) end
-	return false
-end
-
--- Accepting a handover for you (an option, off by default): once what's in the trade has settled, and once for
--- what's in it, since any change makes the game take an acceptance back. Anything else waits for your own click.
-local function AcceptLater()
-	if not ns.settings.autoAcceptTrade or not trade then return end
-	local waiting = trade
-	waiting.check = (waiting.check or 0) + 1
-	local check = waiting.check
-	C_Timer.After(ACCEPT_DELAY, function()
-		if trade ~= waiting or waiting.check ~= check or not IsHandover() then return end
-		local contents = table.concat(waiting.gave, ",") .. "|" .. table.concat(waiting.got, ",")
-		if waiting.accepted == contents then return end
-		waiting.accepted = contents
-		AcceptTrade()
-	end)
-end
-
 local function ReadTrade()
 	if not trade then return end
 	trade.gave, trade.got = {}, {}
@@ -214,7 +176,6 @@ local function ReadTrade()
 		trade.gave[#trade.gave + 1] = ns.ItemID(GetTradePlayerItemLink(slot))
 		trade.got[#trade.got + 1] = ns.ItemID(GetTradeTargetItemLink(slot))
 	end
-	AcceptLater()
 end
 
 ns.On("TRADE_SHOW", function()
@@ -223,7 +184,6 @@ ns.On("TRADE_SHOW", function()
 	ReadTrade()
 	FillTrade()
 end)
-ns.On("TRADE_MONEY_CHANGED", ReadTrade)
 -- The window closes before the game says whether the trade went through, so what was in it is kept until then.
 ns.On("TRADE_CLOSED", function()
 	if trade then trade.closed = true end

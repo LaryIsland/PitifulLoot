@@ -30,9 +30,6 @@ ns.OPTIONS = {
 	{ key = "autoRoll", kind = "dropdown", name = "Auto-roll",
 		choices = { { ns.AUTO_ROLL.OFF, "Off" }, { ns.AUTO_ROLL.REROLLS, "Rerolls only" }, { ns.AUTO_ROLL.ALL, "Every roll" } },
 		tooltip = "Roll for you. Rerolls only: when you're tied, roll again straight away. Every roll: also roll a few seconds after any roll you can take part in starts, unless you pass first." },
-	{ section = "Trading" },
-	{ key = "autoAcceptTrade", kind = "checkbox", name = "Accept Loot Trades",
-		tooltip = "Click Trade for you when a trade only hands over won loot: either you give only items owed to the other player and get nothing back, or you get only items you've won and give nothing. No gold either way. Any other trade waits for you." },
 	{ section = "Window" },
 	{ key = "autoShow", kind = "checkbox", name = "Show When I Can Roll",
 		tooltip = "Open the window on the Roll tab whenever a roll starts that you can take part in." },
@@ -45,7 +42,7 @@ ns.OPTIONS = {
 	{ key = "hideWon", kind = "checkbox", name = "Hide Won Items",
 		tooltip = "Leave the items you've won off the My pity tab." },
 	{ key = "minimapButton", kind = "checkbox", name = "Minimap Button",
-		tooltip = "List Pitiful Loot in the addons menu on the minimap: left-click opens the window, right-click its options. /pl opens the window either way." },
+		tooltip = "Show a button on the edge of the minimap: left-click opens the window, right-click its options, and drag it to move it. /pl opens the window either way." },
 }
 
 -- Changing an option.

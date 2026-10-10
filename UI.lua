@@ -96,11 +96,11 @@ local function SessionLines()
 	for _, row in ipairs(ns.SessionRows()) do
 		local id = row.id
 		local spec = ""
-		if row.roll then spec = row.offSpec and "off" or (row.unknownSpec and "?" or "main") end
+		if row.roll then spec = row.offSpec and "off" or (row.unknownRole and "?" or "main") end
 		local columns = {
 			row.roll and (row.round > 1 and "Rerolled %d" or "Rolled %d"):format(row.roll) or "",
 			row.pity and row.pity > 0 and ("Pity +" .. row.pity) or "",
-			row.offSpec and ("Off-spec %d"):format(ns.OFFSPEC_MODIFIER) or (row.unknownSpec and "Spec unknown") or "",
+			row.offSpec and ("Off-spec %d"):format(ns.OFFSPEC_MODIFIER) or (row.unknownRole and "Role unknown") or "",
 		}
 		-- The roll and what went into it; the total is the number being hovered.
 		local waiting = m.state == "reroll" and row.contender and "Hasn't rerolled" or "Hasn't rolled"
@@ -160,6 +160,23 @@ local function SessionLines()
 			tip = tip,
 			click = click,
 		}
+	end
+	-- A roll you can't take part in is still shown, with your own row at the top saying why, so you can follow it.
+	local why = ns.WhyCantRoll()
+	local me = UnitGUID("player")
+	local listed = false
+	for _, line in ipairs(out) do
+		if line.mine then listed = true end
+	end
+	if why and not listed then
+		table.insert(out, 1, {
+			mine = true,
+			cells = { name = ns.NameOf(me), pity = "", spec = "", roll = "-", total = "", odds = "" },
+			title = ns.ColoredName(me),
+			detail = why,
+			faded = true,
+			tip = { ns.ColoredName(me), "You can't roll on this: " .. why:gsub("^%u", string.lower) .. "." },
+		})
 	end
 	return out
 end
@@ -227,6 +244,50 @@ local function TradeLines(out)
 	for _, row in ipairs(rows) do out[#out + 1] = row end
 end
 
+-- The game's icon for a role, to put in text: the plain ones Forever's group finder lists groups with, not the
+-- circled ones GetIconForRole gives.
+local ROLE_ICONS = {
+	TANK = "groupfinder-icon-role-large-tank", HEALER = "groupfinder-icon-role-large-heal", DAMAGER = "groupfinder-icon-role-large-dps",
+}
+local ROLE_ICON_SIZE = 18
+local function RoleIcon(role)
+	return CreateAtlasMarkup(ROLE_ICONS[role], ROLE_ICON_SIZE, ROLE_ICON_SIZE)
+end
+
+-- The icons for the roles in a set, in the usual order.
+local function RoleIcons(suits)
+	local icons = {}
+	for _, role in ipairs(ns.ROLE_ORDER) do
+		if suits[role] then icons[#icons + 1] = RoleIcon(role) end
+	end
+	return table.concat(icons, " ")
+end
+
+-- An officer's menu for an item, from a right-click: a greed roll, if the writer can start one, and the item's roles
+-- (4.6), ticked as they stand. Changing them is recorded in the ledger for everyone.
+local function ShowItemMenu(owner, item, greedRoll)
+	MenuUtil.CreateContextMenu(owner, function(_, root)
+		root:CreateTitle(C_Item.GetItemInfo(item) or ns.ItemLink(item))
+		if greedRoll then root:CreateButton("Start a greed roll", greedRoll) end
+		root:CreateTitle("Roles")
+		for _, role in ipairs(ns.ROLE_ORDER) do
+			local function Suits()
+				local suits = ns.ItemRoles(item)
+				return suits == nil or suits[role] == true
+			end
+			root:CreateCheckbox(RoleIcon(role) .. " " .. ns.ROLE_NAMES[role], Suits, function()
+				local suits = {}
+				for _, other in ipairs(ns.ROLE_ORDER) do
+					local current = ns.ItemRoles(item)
+					suits[other] = (current == nil or current[other]) or nil
+				end
+				suits[role] = not Suits() or nil
+				ns.SetItemRoles(item, suits)
+			end)
+		end
+	end)
+end
+
 local function Contains(ids, id)
 	for _, each in ipairs(ids or {}) do
 		if each == id then return true end
@@ -270,6 +331,9 @@ local function LootLines()
 			-- Once it's won, the winners show how many there were.
 			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = entry.copies .. " copies" end
 			if entry.boe then detail[#detail + 1] = "Binds on Equip" end
+			-- The icons of the roles it's for, unless it's for any of them.
+			local suits = not done and ns.ItemRoles(item)
+			if suits then detail[#detail + 1] = RoleIcons(suits) end
 			local status
 			if entry.status == "rolling" then
 				status = Colored("Rolling now", NORMAL_FONT_COLOR)
@@ -287,16 +351,30 @@ local function LootLines()
 				status = "No one rolled"
 			end
 			if status then detail[#detail + 1] = status end
+			-- The writer starts rolls with a left-click; a right-click is a BoE's greed roll, and for officers, a menu
+			-- with that and the item's roles.
 			local click, hints
-			if canStart and (entry.status == "waiting" or entry.status == "none") then
-				local copies = entry.copies - #entry.winners
-				hints = { "Left-click to start a roll." }
-				if entry.boe then hints[2] = "Right-click to start a greed roll." end
-				click = function(button)
-					if button == "LeftButton" then
+			local canRoll = canStart and (entry.status == "waiting" or entry.status == "none")
+			local copies = entry.copies - #entry.winners
+			local greed = canRoll and entry.boe and function() ns.StartRoll(item, copies, true) end or nil
+			local setRoles = AsOfficer() and not ns.ForEveryone(item)
+			if canRoll or greed or setRoles then
+				hints = {}
+				if canRoll then hints[#hints + 1] = "Left-click to start a roll." end
+				if greed and setRoles then
+					hints[#hints + 1] = "Right-click for a greed roll, or to set its roles."
+				elseif greed then
+					hints[#hints + 1] = "Right-click to start a greed roll."
+				elseif setRoles then
+					hints[#hints + 1] = "Right-click to set its roles."
+				end
+				click = function(button, owner)
+					if button == "LeftButton" and canRoll then
 						ns.StartRoll(item, copies)
-					elseif button == "RightButton" and entry.boe then
-						ns.StartRoll(item, copies, true)
+					elseif button == "RightButton" and setRoles then
+						ShowItemMenu(owner, item, greed)
+					elseif button == "RightButton" and greed then
+						greed()
 					end
 				end
 			end
@@ -515,7 +593,7 @@ local function BuildRow(row)
 	row.Pass:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	row:SetScript("OnClick", function(self, button) if self.line and self.line.click then self.line.click(button) end end)
+	row:SetScript("OnClick", function(self, button) if self.line and self.line.click then self.line.click(button, self) end end)
 	row:SetScript("OnEnter", function(self) if self.line then ShowTooltip(self, self.line) end end)
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
@@ -789,6 +867,10 @@ function ns.RefreshWindow()
 	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
 	local empty = EMPTY[view]
 	if view == "loot" and ns.loot.groups[1] then empty = "None of the loot is for you." end
+	local m = ns.live.mirror
+	if view == "session" and m then
+		empty = (m.state == "open" or m.state == "reroll") and "No one has rolled yet." or "No one rolled."
+	end
 	frame.Empty:SetText(lines[1] and "" or empty)
 	UpdateHeader()
 	UpdateButtons()
@@ -1020,12 +1102,23 @@ local function Create()
 	local itemHit = CreateFrame("Button", nil, frame)
 	itemHit:SetPoint("TOPLEFT", 0, 0)
 	itemHit:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", WIDTH - 40, -56)
+	-- Officers can right-click the item to set its roles, as on the Loot tab.
+	local function CanSetRoles(m)
+		return m and AsOfficer() and not ns.ForEveryone(m.item)
+	end
+	itemHit:RegisterForClicks("RightButtonUp")
 	itemHit:SetScript("OnEnter", function(self)
 		local m = ns.live.mirror
-		if m then ShowTooltip(self, { item = m.item }) end
+		if not m then return end
+		ShowTooltip(self, { item = m.item, hints = CanSetRoles(m) and { "Right-click to set its roles." } or nil })
+	end)
+	itemHit:SetScript("OnClick", function(self)
+		local m = ns.live.mirror
+		if CanSetRoles(m) then ShowItemMenu(self, m.item) end
 	end)
 	itemHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	MakeDragHandle(itemHit)
+	frame.ItemHit = itemHit
 
 	local timer = CreateFrame("Frame", nil, frame)
 	timer:SetPoint("TOPLEFT", 62, -60)
@@ -1194,39 +1287,15 @@ function ns.ToggleWindow()
 	end
 end
 
--- The addon compartment by the minimap: left click for the window, right for its options. It's added here rather
--- than from the TOC so the Minimap Button option can take it out again, which the compartment can't do for an entry
--- the TOC adds.
-local compartment = {
-	text = "Pitiful Loot",
-	icon = ADDON_ICON,
-	func = function(_, input)
-		if input and input.buttonName == "RightButton" then
-			ns.OpenOptions()
-		else
-			ns.ToggleWindow()
-		end
-	end,
-}
-
-local function UpdateCompartment()
-	local menu = AddonCompartmentFrame
-	if not (menu and menu.registeredAddons and menu.RegisterAddon) then return end
-	local index
-	for i, data in ipairs(menu.registeredAddons) do
-		if data == compartment then index = i end
-	end
-	if ns.settings.minimapButton and not index then
-		menu:RegisterAddon(compartment)
-	elseif not ns.settings.minimapButton and index then
-		table.remove(menu.registeredAddons, index)
-		menu:UpdateDisplay()
+-- The addon compartment by the minimap (## AddonCompartmentFunc): left click for the window, right for its options.
+-- Forever keeps that menu hidden, so the minimap button (MinimapButton.lua) is the one players see.
+function PitifulLoot_OnAddonCompartmentClick(_, button)
+	if button == "RightButton" then
+		ns.OpenOptions()
+	else
+		ns.ToggleWindow()
 	end
 end
-ns.On("PLAYER_LOGIN", UpdateCompartment)
-ns.Listen("SETTINGS_CHANGED", function(key)
-	if key == "minimapButton" then UpdateCompartment() end
-end)
 
 -- For tests: the lines on show, and the window.
 function ns.WindowLines()

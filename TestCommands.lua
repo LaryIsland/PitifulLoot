@@ -22,7 +22,7 @@ local TEST_RAIDS = {
 
 local HELP = {
 	"/pl test on | off - test mode: a separate ledger, you count as an officer, no ledger sync",
-	"/pl test reset - empty the test ledger",
+	"/pl test reset - empty the test ledger and the Loot tab, and cancel your roll",
 	"/pl test pity [count] [name] - random pity on random items you're wearing, from made-up raids (for someone else with a name)",
 	"/pl test roll [item] [copies] - become the writer and start a roll (a random item you're wearing if none is given)",
 	"/pl test rollers [count] - made-up players roll in the open roll, or reroll if they're tied",
@@ -31,6 +31,9 @@ local HELP = {
 	"/pl test capture [new] - how much the test capture has recorded, or start a new one",
 	"/pl test trust <name> - count another player as an officer while in test mode, to test with friends",
 	"/pl test warn - add a warning, to see how one shows",
+	"/pl test trade <item> - with a player targeted: a copy of <item> from your bags is awaiting trade to them",
+	"/pl test owed <item> - with a player targeted: a copy of <item> is awaiting trade from them to you",
+	"/pl test probe [item] - what the game says about loot methods, the minimap menu, specs, your target and an item, to copy",
 }
 
 local fakes = {} -- made-up rollers: { id, name }
@@ -104,8 +107,11 @@ function test.reset()
 	ns.ledgers[ns.guild] = nil
 	ns.guild = nil
 	fakes = {}
+	ns.CancelRoll()
+	ns.loot = { groups = {} }
+	ns.Fire("LOOT_CHANGED")
 	ns.UpdateGuild()
-	ns.Print("The test ledger is empty.")
+	ns.Print("The test ledger and the Loot tab are empty.")
 end
 
 function test.pity(args)
@@ -199,6 +205,179 @@ end
 
 function test.warn()
 	ns.Warn("This is a test warning. Click the sign to dismiss it.")
+end
+
+-- Your target's GUID, if it's another player whose GUID can be read.
+local function TargetPlayer()
+	if not UnitIsPlayer("target") then return nil end
+	local guid, me = UnitGUID("target"), UnitGUID("player")
+	if not canaccessvalue(guid) or not canaccessvalue(me) then return nil end
+	if not guid or guid == me then return nil end
+	return guid
+end
+
+-- Handing over with any one other player, grouped or not: a won item awaiting trade between you and your target.
+-- `toThem`: you hold it and it's owed to them; otherwise they hold it and it's owed to you.
+local function TestHandover(args, toThem)
+	if not InTestMode() then return end
+	local item = ns.ItemID(args[3])
+	if not item then return ns.Print(("/pl test %s <item>, with the player targeted"):format(toThem and "trade" or "owed")) end
+	local them, name = TargetPlayer(), ns.FullUnitName("target")
+	if not them then return ns.Print("Target the player to trade with first.") end
+	if not name then return ns.Print("Your target's name can't be read right now; try out of combat.") end
+	ns.RememberName(them, name, select(2, UnitClass("target")))
+	local winner = toThem and them or UnitGUID("player")
+	ns.SetLoot({ { item = item, copies = 1 } }, toThem and ns.PlayerName() or name, "Test trade", true)
+	local entry = ns.LatestLoot().items[1]
+	entry.status, entry.winners = "awarded", { winner }
+	entry.handovers = { { id = winner, sid = ("test:%d:%d"):format(GetServerTime(), math.random(1000000)) } }
+	ns.Fire("LOOT_CHANGED")
+	ns.ShowWindow("loot")
+	if not toThem then
+		return ns.Print(("%s is awaiting trade from %s to you. Have them open a trade and put one in; Accept Loot Trades accepts it for you."):format(ns.ItemLink(item), ns.ColoredName(them)))
+	end
+	ns.Print(("%s is awaiting trade to %s. Left-click it on the Loot tab to open the trade, or have them open one with you."):format(ns.ItemLink(item), ns.ColoredName(them)))
+	if not ns.HoldsItem(item) then ns.Print("You don't have one in your bags, so nothing will go into the trade.") end
+end
+
+function test.trade(args) TestHandover(args, true) end
+function test.owed(args) TestHandover(args, false) end
+
+-- Probing the client: values as text, with secret ones and errors said as such.
+local function Text(...)
+	local parts = {}
+	for i = 1, select("#", ...) do
+		local value = select(i, ...)
+		if issecretvalue and issecretvalue(value) then
+			parts[i] = "<secret>"
+		elseif type(value) == "table" then
+			local inner = {}
+			for k, v in pairs(value) do inner[#inner + 1] = tostring(k) .. "=" .. Text(v) end
+			table.sort(inner)
+			parts[i] = "{" .. table.concat(inner, ", ") .. "}"
+		else
+			parts[i] = tostring(value)
+		end
+	end
+	return table.concat(parts, ", ")
+end
+
+local function Try(f, ...)
+	if type(f) ~= "function" then return "<not in this client>" end
+	return (function(ok, ...)
+		if not ok then return "<error: " .. tostring((...)) .. ">" end
+		return Text(...)
+	end)(pcall(f, ...))
+end
+
+-- A box to copy text from, as chat can't be copied: Ctrl+A then Ctrl+C.
+local copyBox
+local function ShowCopyBox(title, text)
+	if not copyBox then
+		copyBox = CreateFrame("Frame", "PitifulLootCopyBox", UIParent, "PortraitFrameTemplate")
+		copyBox:SetSize(520, 420)
+		copyBox:SetPoint("CENTER")
+		copyBox:SetFrameStrata("DIALOG")
+		copyBox:SetMovable(true)
+		copyBox:EnableMouse(true)
+		copyBox:RegisterForDrag("LeftButton")
+		copyBox:SetScript("OnDragStart", copyBox.StartMoving)
+		copyBox:SetScript("OnDragStop", copyBox.StopMovingOrSizing)
+		copyBox:SetPortraitToAsset("Interface\\Icons\\INV_Misc_Dice_02")
+		table.insert(UISpecialFrames, "PitifulLootCopyBox")
+		local scroll = CreateFrame("ScrollFrame", nil, copyBox, "ScrollFrameTemplate")
+		scroll:SetPoint("TOPLEFT", 16, -64)
+		scroll:SetPoint("BOTTOMRIGHT", -30, 16)
+		local edit = CreateFrame("EditBox", nil, scroll)
+		edit:SetMultiLine(true)
+		edit:SetAutoFocus(false)
+		edit:SetFontObject("ChatFontNormal")
+		edit:SetWidth(460)
+		edit:SetScript("OnEscapePressed", function() copyBox:Hide() end)
+		scroll:SetScrollChild(edit)
+		copyBox.Edit = edit
+		local hint = copyBox:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		hint:SetPoint("TOPLEFT", 64, -38)
+		hint:SetText("Ctrl+A then Ctrl+C to copy.")
+	end
+	copyBox:SetTitle(title)
+	copyBox.Edit:SetText(text)
+	copyBox:Show()
+	copyBox.Edit:SetFocus()
+	copyBox.Edit:HighlightText()
+end
+
+-- What the client says about everything the beta checks are unsure of, in one place to copy: the loot methods
+-- (is master loot there?), the minimap's addons menu, specs and roles, your target's inspected spec, and an item.
+function test.probe(args)
+	local lines = { "Pitiful Loot probe, " .. date("%Y-%m-%d %H:%M"), "Client: " .. Try(GetBuildInfo) }
+	local function Add(label, value) lines[#lines + 1] = label .. ": " .. value end
+
+	local names = {}
+	for name, value in pairs(Enum.LootMethod or {}) do names[value] = name end
+	local available = {}
+	local ok, methods = pcall(C_PartyInfo.GetAvailableLootMethods)
+	for _, method in ipairs(ok and type(methods) == "table" and methods or {}) do
+		available[#available + 1] = names[method] or tostring(method)
+	end
+	Add("Loot methods available", ok and table.concat(available, ", ") or "<error>")
+	Add("Master loot available", Try(C_PartyInfo.IsLootMethodAvailable, Enum.LootMethod and Enum.LootMethod.Masterlooter))
+	Add("Current loot method", Try(C_PartyInfo.GetLootMethod))
+
+	local menu = AddonCompartmentFrame
+	if menu then
+		local listed = false
+		for _, data in ipairs(menu.registeredAddons or {}) do
+			if type(data.text) == "string" and data.text:find("Pitiful Loot", 1, true) then listed = true end
+		end
+		Add("Addons menu", ("exists, shown %s, %d addons, Pitiful Loot listed %s, Minimap Button option %s"):format(
+			Try(menu.IsShown, menu), #(menu.registeredAddons or {}), tostring(listed), tostring(ns.settings.minimapButton)))
+	else
+		Add("Addons menu", "AddonCompartmentFrame doesn't exist")
+	end
+	local minimapButton = ns.MinimapButton and ns.MinimapButton()
+	Add("Minimap button", minimapButton and ("shown %s, parent %s, option %s"):format(Try(minimapButton.IsShown, minimapButton),
+		Try(function() local parent = minimapButton:GetParent() return parent and parent:GetName() end), tostring(ns.settings.minimapButton))
+		or "not made")
+
+	local found, index = pcall(C_SpecializationInfo.GetSpecialization)
+	if not found then index = nil end
+	Add("Your spec index", Text(index))
+	Add("Your spec info", index and Try(C_SpecializationInfo.GetSpecializationInfo, index) or "-")
+	Add("Specs for your class", Try(C_SpecializationInfo.GetNumSpecializationsForClassID, select(3, UnitClass("player"))))
+	Add("Spec selection enabled", Try(C_SpecializationInfo.IsSpecSelectionEnabled))
+	Add("Your assigned role", Try(UnitGroupRolesAssigned, "player"))
+
+	local item = ns.ItemID(args[3])
+	if item then
+		Add("Item", ns.ItemLink(item) .. " (" .. item .. ")")
+		Add("Item type", Try(C_Item.GetItemInfoInstant, item))
+		Add("Item spec list", Try(C_Item.GetItemSpecInfo, item))
+		local _, link = C_Item.GetItemInfo(item)
+		Add("Item stats", link and Try(C_Item.GetItemStats, link) or "<not loaded yet; probe again>")
+		local tip = C_TooltipInfo and C_TooltipInfo.GetItemByID and C_TooltipInfo.GetItemByID(item)
+		for i, line in ipairs(tip and tip.lines or {}) do
+			Add("Tooltip " .. i, Text(line.leftText) .. (line.rightText and ("  |  " .. Text(line.rightText)) or ""))
+		end
+	end
+
+	local function Finish()
+		local text = table.concat(lines, "\n")
+		ns.Capture("probe", text)
+		ns.LastProbe = text
+		ShowCopyBox("Pitiful Loot probe", text)
+	end
+	if not TargetPlayer() then return Finish() end
+	Add("Target", Try(UnitName, "target") .. " (" .. Try(UnitClass, "target") .. ")")
+	Add("Target's assigned role", Try(UnitGroupRolesAssigned, "target"))
+	if CanInspect("target") then NotifyInspect("target") end
+	ns.Print("Inspecting your target; the probe opens in 2 seconds.")
+	C_Timer.After(2, function()
+		local spec = C_SpecializationInfo.GetInspectSpecialization and select(2, pcall(C_SpecializationInfo.GetInspectSpecialization, "target"))
+		Add("Target's inspected spec", Text(spec))
+		Add("That spec's info", Try(GetSpecializationInfoByID, spec))
+		Finish()
+	end)
 end
 
 function test.help()

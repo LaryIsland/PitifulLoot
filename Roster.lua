@@ -1,10 +1,7 @@
 local _, ns = ...
 
--- Who is in the group and the guild by name and GUID, which guild members are officers (6.3), what each raider's
--- spec is for off-spec rolls (4.6), and what an item says about who can use it (4.5).
-
-local INSPECT_INTERVAL = 2
-local INSPECT_TIMEOUT = 5
+-- Who is in the group and the guild by name and GUID, which guild members are officers (6.3), each raider's role
+-- for off-spec rolls (4.6), and what an item says about who can use it (4.5) and which roles it's for.
 
 local group, guild
 local groupDirty, guildDirty = true, true
@@ -205,96 +202,195 @@ function ns.IsBoE(item)
 	return select(14, C_Item.GetItemInfo(item)) == 2
 end
 
--- Items that are nobody's spec in particular: cosmetics, and anything that isn't gear (mounts, pets, recipes).
+-- Items that are nobody's role in particular: cosmetics, and anything that isn't gear (mounts, pets, recipes).
 -- Anyone can roll on them, and nobody is off-spec for them.
 function ns.ForEveryone(item)
 	if C_Item.IsCosmeticItem and C_Item.IsCosmeticItem(item) then return true end
 	if C_Item.IsEquippableItem and not C_Item.IsEquippableItem(item) then return true end
-	local specs = C_Item.GetItemSpecInfo(item)
-	return not (specs and #specs > 0)
+	return false
 end
 
-local function ItemSpecs(item)
-	if ns.ForEveryone(item) then return nil end
-	return C_Item.GetItemSpecInfo(item)
+-- Who can use what (4.5). Forever's items aren't tied to specs, so it's worked out from the item itself: a
+-- "Classes:" line on its tooltip limits it to those classes, and otherwise its armour or weapon type has to be one the
+-- class can equip, as in the original game. Rings, necks, trinkets, cloaks and off-hand items suit anyone. To be
+-- tuned as the beta shows what's wrong.
+local ITEM_ARMOR, ITEM_WEAPON = 4, 2 -- Enum.ItemClass
+local ARMOR = { cloth = 1, leather = 2, mail = 3, plate = 4, shield = 6, libram = 7, idol = 8, totem = 9 }
+local WEAPON = {
+	axe = 0, axe2h = 1, bow = 2, gun = 3, mace = 4, mace2h = 5, polearm = 6, sword = 7, sword2h = 8, staff = 10,
+	fist = 13, dagger = 15, thrown = 16, crossbow = 18, wand = 19,
+}
+local ANY_ARMOR, ANY_WEAPON = { [0] = true }, { [14] = true, [20] = true } -- miscellaneous, and fishing poles
+local PROFICIENCY = {
+	WARRIOR = {
+		armor = { "cloth", "leather", "mail", "plate", "shield" },
+		weapons = { "axe", "axe2h", "bow", "gun", "mace", "mace2h", "polearm", "sword", "sword2h", "staff", "fist", "dagger", "thrown", "crossbow" },
+	},
+	PALADIN = {
+		armor = { "cloth", "leather", "mail", "plate", "shield", "libram" },
+		weapons = { "axe", "axe2h", "mace", "mace2h", "polearm", "sword", "sword2h" },
+	},
+	HUNTER = {
+		armor = { "cloth", "leather", "mail" },
+		weapons = { "axe", "axe2h", "bow", "gun", "polearm", "sword", "sword2h", "staff", "fist", "dagger", "thrown", "crossbow" },
+	},
+	ROGUE = { armor = { "cloth", "leather" }, weapons = { "bow", "gun", "mace", "sword", "fist", "dagger", "thrown", "crossbow" } },
+	PRIEST = { armor = { "cloth" }, weapons = { "mace", "staff", "dagger", "wand" } },
+	SHAMAN = {
+		armor = { "cloth", "leather", "mail", "shield", "totem" },
+		weapons = { "axe", "axe2h", "mace", "mace2h", "staff", "fist", "dagger" },
+	},
+	MAGE = { armor = { "cloth" }, weapons = { "sword", "staff", "dagger", "wand" } },
+	WARLOCK = { armor = { "cloth" }, weapons = { "sword", "staff", "dagger", "wand" } },
+	DRUID = { armor = { "cloth", "leather", "idol" }, weapons = { "mace", "mace2h", "staff", "fist", "dagger" } },
+}
+local equips = {} -- class -> { [item class] = { [subclass] = true } }
+for class, kinds in pairs(PROFICIENCY) do
+	local armor, weapons = setmetatable({}, { __index = ANY_ARMOR }), setmetatable({}, { __index = ANY_WEAPON })
+	for _, name in ipairs(kinds.armor) do armor[ARMOR[name]] = true end
+	for _, name in ipairs(kinds.weapons) do weapons[WEAPON[name]] = true end
+	equips[class] = { [ITEM_ARMOR] = armor, [ITEM_WEAPON] = weapons }
+end
+
+-- A format string from the game's own text as a pattern, its %s and %d capturing.
+local function Pattern(format)
+	return "^" .. format:gsub("[%^%$%(%)%.%[%]%*%+%-%?]", "%%%0"):gsub("%%%%?([sd])", "(.+)")
+end
+local CLASSES_LINE = ITEM_CLASSES_ALLOWED and Pattern(ITEM_CLASSES_ALLOWED)
+
+-- The classes an item's tooltip limits it to, as class file names, or false if it doesn't. Only kept once the item's
+-- data has loaded, as the tooltip is incomplete before then.
+local classNames -- localised class name -> file name
+local restrictions = {}
+local function ClassesAllowed(item)
+	if restrictions[item] ~= nil then return restrictions[item] end
+	if not (CLASSES_LINE and C_TooltipInfo and C_TooltipInfo.GetItemByID) then return false end
+	if not classNames then
+		classNames = {}
+		for _, names in ipairs({ LOCALIZED_CLASS_NAMES_MALE, LOCALIZED_CLASS_NAMES_FEMALE }) do
+			if type(names) == "table" then
+				for file, name in pairs(names) do classNames[name] = file end
+			end
+		end
+	end
+	local allowed = false
+	local data = C_TooltipInfo.GetItemByID(item)
+	for _, line in ipairs(data and data.lines or {}) do
+		local text = line.leftText
+		local list = canaccessvalue(text) and type(text) == "string" and text:match(CLASSES_LINE)
+		if list then
+			allowed = {}
+			for name in list:gmatch("[^,]+") do
+				name = name:match("^%s*(.-)%s*$")
+				allowed[classNames[name] or name:upper()] = true
+			end
+		end
+	end
+	if C_Item.GetItemInfo(item) then restrictions[item] = allowed end
+	return allowed
+end
+
+local function CanEquip(class, item)
+	local classSets = equips[class]
+	if not classSets then return true end
+	local _, _, _, equipLoc, _, itemClass, subclass = C_Item.GetItemInfoInstant(item)
+	if equipLoc == "INVTYPE_CLOAK" then return true end
+	local set = classSets[itemClass]
+	if not set or subclass == nil then return true end
+	return set[subclass] == true
 end
 
 -- Whether the player's class can use the item at all (4.5). Anything the client can't say counts as usable.
 function ns.CanUse(guid, item)
-	local specs = ItemSpecs(item)
 	local member = ns.GroupMember(guid)
-	if not specs or not member or not member.classID then return true end
-	for _, spec in ipairs(specs) do
-		if C_SpecializationInfo.GetClassIDFromSpecID(spec) == member.classID then return true end
-	end
-	return false
+	local class = member and member.class
+	if not class then return true end
+	local allowed = ClassesAllowed(item)
+	if allowed and not allowed[class] then return false end
+	if ns.ForEveryone(item) then return true end
+	return CanEquip(class, item)
 end
 
--- Specs ---------------------------------------------------------------------------------------------------------
+-- Roles --------------------------------------------------------------------------------------------------------
 
--- Each raider's spec, kept from the first time it's seen so swapping spec doesn't dodge the off-spec penalty (4.6).
--- Only the writer looks these up; the writer can correct any roll's off-spec flag.
-local specs = {}
-local queue, inspecting, ticker = {}, nil, nil
+-- The roles each class can fill. A class with one role is always that role; a role its class can't fill is ignored.
+local CLASS_ROLES = {
+	WARRIOR = { TANK = true, DAMAGER = true },
+	PRIEST = { HEALER = true, DAMAGER = true },
+	PALADIN = { TANK = true, HEALER = true, DAMAGER = true },
+	SHAMAN = { TANK = true, HEALER = true, DAMAGER = true },
+	DRUID = { TANK = true, HEALER = true, DAMAGER = true },
+	MAGE = { DAMAGER = true }, WARLOCK = { DAMAGER = true }, ROGUE = { DAMAGER = true }, HUNTER = { DAMAGER = true },
+}
 
-function ns.ResetSpecs()
-	specs = {}
-end
+-- Each raider's role is the one the raid leader gave them in the game's role menu, kept from the first time it's
+-- seen so swapping roles doesn't dodge the off-spec penalty; a class that can only do damage always does. Someone
+-- else with no role is unknown, and counts as main-spec until the writer says otherwise.
+local roles = {}
 
-function ns.SpecOf(guid)
-	if not specs[guid] and guid == UnitGUID("player") then
-		local index = C_SpecializationInfo.GetSpecialization()
-		local spec = index and C_SpecializationInfo.GetSpecializationInfo(index)
-		if spec and spec > 0 then specs[guid] = spec end
-	end
-	return specs[guid]
-end
-
--- Whether the item is off-spec for the player: true or false, or nil if their spec isn't known yet.
-function ns.IsOffSpec(guid, item)
-	local itemSpecs = ItemSpecs(item)
-	if not itemSpecs then return false end
-	local spec = ns.SpecOf(guid)
-	if not spec then return nil end
-	for _, s in ipairs(itemSpecs) do
-		if s == spec then return false end
-	end
-	return true
-end
-
-local function InspectNext()
-	if inspecting and GetTime() - inspecting.started < INSPECT_TIMEOUT then return end
-	inspecting = nil
-	if InCombatLockdown() then return end
-	while queue[1] do
-		local guid = table.remove(queue, 1)
+function ns.RoleOf(guid)
+	if not roles[guid] then
 		local member = ns.GroupMember(guid)
-		if member and not specs[guid] and CanInspect(member.unit) then
-			inspecting = { guid = guid, unit = member.unit, started = GetTime() }
-			NotifyInspect(member.unit)
-			return
+		local fills = member and CLASS_ROLES[member.class]
+		local role = member and UnitGroupRolesAssigned(member.unit)
+		if canaccessvalue(role) and ns.ROLE_NAMES[role] and (not fills or fills[role]) then
+			roles[guid] = role
+		elseif fills and not next(fills, next(fills)) then
+			return (next(fills))
 		end
 	end
-	if ticker then
-		ticker:Cancel()
-		ticker = nil
-	end
+	return roles[guid]
 end
 
--- Looks up the spec of everyone in the group not already known, one at a time.
-function ns.InspectGroup()
-	queue = {}
-	for _, member in ipairs(ns.GroupMembers()) do
-		if not ns.SpecOf(member.guid) then queue[#queue + 1] = member.guid end
-	end
-	if queue[1] and not ticker then ticker = C_Timer.NewTicker(INSPECT_INTERVAL, InspectNext) end
-	InspectNext()
-end
-
-ns.On("INSPECT_READY", function(guid)
-	if not inspecting or inspecting.guid ~= guid then return end
-	local spec = C_SpecializationInfo.GetInspectSpecialization(inspecting.unit)
-	if canaccessvalue(spec) and spec and spec > 0 then specs[guid] = spec end
-	inspecting = nil
-	ClearInspectPlayer()
+ns.On("GROUP_ROSTER_UPDATE", function()
+	if not IsInGroup() then roles = {} end
 end)
+
+-- What an item's stats say about the roles it's for. Strength and agility suit tanks too, so plate with defense
+-- reads as tank and damage. To be tuned.
+local STAT_ROLES = {
+	ITEM_MOD_DEFENSE_SKILL_RATING_SHORT = { "TANK" }, ITEM_MOD_DODGE_RATING_SHORT = { "TANK" },
+	ITEM_MOD_PARRY_RATING_SHORT = { "TANK" }, ITEM_MOD_BLOCK_RATING_SHORT = { "TANK" }, ITEM_MOD_BLOCK_VALUE_SHORT = { "TANK" },
+	ITEM_MOD_SPIRIT_SHORT = { "HEALER" }, ITEM_MOD_MANA_REGENERATION_SHORT = { "HEALER" },
+	ITEM_MOD_SPELL_HEALING_DONE_SHORT = { "HEALER" },
+	ITEM_MOD_INTELLECT_SHORT = { "HEALER", "DAMAGER" },
+	ITEM_MOD_STRENGTH_SHORT = { "DAMAGER" }, ITEM_MOD_AGILITY_SHORT = { "DAMAGER" }, ITEM_MOD_ATTACK_POWER_SHORT = { "DAMAGER" },
+	ITEM_MOD_HIT_RATING_SHORT = { "DAMAGER" }, ITEM_MOD_CRIT_RATING_SHORT = { "DAMAGER" },
+	ITEM_MOD_SPELL_DAMAGE_DONE_SHORT = { "DAMAGER" }, ITEM_MOD_SPELL_POWER_SHORT = { "DAMAGER" },
+}
+
+local function SuggestedRoles(item)
+	local _, link = C_Item.GetItemInfo(item)
+	local stats = link and C_Item.GetItemStats(link)
+	local suits
+	for stat in pairs(stats or {}) do
+		for _, role in ipairs(STAT_ROLES[stat] or {}) do
+			suits = suits or {}
+			suits[role] = true
+		end
+	end
+	return suits
+end
+
+-- The roles an item is for, as a set, or nil for any role: an officer's say, recorded in the ledger, or
+-- else what its stats suggest. Items that aren't gear, or whose stats say nothing, suit any role.
+function ns.ItemRoles(item)
+	if ns.ForEveryone(item) then return nil end
+	local state = ns.ledger and ns.ledger.state
+	local suits = state and state.roles[item]
+	if suits == nil then suits = SuggestedRoles(item) end
+	if not suits or next(suits) == nil then return nil end
+	for _, role in ipairs(ns.ROLE_ORDER) do
+		if not suits[role] then return suits end
+	end
+	return nil
+end
+
+-- Whether the item is off-spec for the player: true or false, or nil if their role isn't known.
+function ns.IsOffSpec(guid, item)
+	local suits = ns.ItemRoles(item)
+	if not suits then return false end
+	local role = ns.RoleOf(guid)
+	if not role then return nil end
+	return not suits[role]
+end

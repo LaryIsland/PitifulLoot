@@ -8,7 +8,10 @@ externals:
   libs/CallbackHandler-1.0: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
   libs/AceDB-3.0: https://repos.wowace.com/wow/ace3/trunk/AceDB-3.0
   libs/AceComm-3.0: https://repos.wowace.com/wow/ace3/trunk/AceComm-3.0
+  libs/LibDataBroker-1.1: https://github.com/tekkub/libdatabroker-1-1
+  libs/LibDBIcon-1.0: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
 
-# The design document stays in the repository but isn't part of the addon.
+# The design document and beta checks stay in the repository but aren't part of the addon.
 ignore:
   - Design Document.md
+  - Beta Checks.md

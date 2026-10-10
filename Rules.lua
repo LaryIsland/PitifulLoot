@@ -9,6 +9,10 @@ ns.ROLL_MAX = 100
 ns.LEAVER_DECAY = 10
 ns.LEAVER_DECAY_PERIOD = 7 * 24 * 60 * 60
 
+-- Main-spec and off-spec are by raid role (4.6): every Forever class has a single spec, so a spec says nothing.
+ns.ROLE_ORDER = { "TANK", "HEALER", "DAMAGER" }
+ns.ROLE_NAMES = { TANK = "Tank", HEALER = "Healer", DAMAGER = "Damage" }
+
 -- What a player adds to their roll on an item: their pity, less the off-spec penalty. Not floored (4.2).
 function ns.Bonus(pity, offSpec)
 	return pity + (offSpec and ns.OFFSPEC_MODIFIER or 0)

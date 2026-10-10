@@ -16,8 +16,8 @@ local DEFAULTS = {
 	pityByBoss = false, -- group My pity by boss inside each raid
 	hideWon = false, -- leave items you've won off My pity
 	hideUnrollable = false, -- leave loot you can't roll on off the Loot tab, unless you're the writer
-	minimapButton = true, -- list the addon in the minimap's addon compartment
-	autoAcceptTrade = false, -- accept trades that only hand over won items, without clicking Trade
+	minimapButton = true, -- the button on the edge of the minimap (MinimapButton.lua)
+	minimapIcon = {}, -- LibDBIcon's record of that button: where it sits, and whether it's hidden
 	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
 	collapsed = {}, -- My pity groups the player has collapsed
 }

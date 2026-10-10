@@ -5,6 +5,7 @@
 ## Notes: Raid loot rolls with a per-item pity timer for WoW Forever
 ## Category: Raid
 ## IconTexture: Interface\Icons\INV_Misc_Dice_02
+## AddonCompartmentFunc: PitifulLoot_OnAddonCompartmentClick
 ## SavedVariables: PitifulLootDB, PitifulLootCapture
 ## OptionalDeps: Ace3
 
@@ -26,6 +27,7 @@ Session.lua
 Loot.lua
 Trades.lua
 UI.lua
+MinimapButton.lua
 Options.lua
 Commands.lua
 # Temporary, for testing in game; remove before release.

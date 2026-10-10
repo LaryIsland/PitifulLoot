@@ -10,7 +10,7 @@ local State = {}
 State.__index = State
 
 local function NewState()
-	return setmetatable({ pity = {}, greed = {}, won = {}, left = {}, sources = {} }, State)
+	return setmetatable({ pity = {}, greed = {}, won = {}, left = {}, sources = {}, roles = {} }, State)
 end
 
 local function WeeksAway(left, now)
@@ -117,6 +117,18 @@ function Apply.adjust(state, e)
 	if e.pity ~= nil then Set(e.greed and state.greed or state.pity, e.id, e.item, e.pity) end
 	if e.unlock then Set(state.won, e.id, e.item, nil) end
 	RecordSource(state, e)
+end
+
+-- An officer's say on which raid roles an item is main-spec for, in place of what its stats suggest (4.6). Every role,
+-- or none, means anyone.
+function Apply.roles(state, e)
+	if type(e.item) ~= "number" or type(e.roles) ~= "table" then return "malformed roles" end
+	local suits = {}
+	for _, role in ipairs(e.roles) do
+		if not ns.ROLE_NAMES[role] then return "unknown role " .. tostring(role) end
+		suits[role] = true
+	end
+	state.roles[e.item] = suits
 end
 
 function Apply.leave(state, e)

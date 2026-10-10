@@ -287,7 +287,7 @@ function Mirror.rolls(d, m)
 			m.rejects[#m.rejects + 1] = { round = d.round, name = r.name, roll = r.roll, why = r.why }
 		else
 			if d.round == 1 then
-				m.entrants[r.id] = { name = r.name, pity = r.pity, offSpec = r.os or nil, unknownSpec = r.unknown or nil }
+				m.entrants[r.id] = { name = r.name, pity = r.pity, offSpec = r.os or nil, unknownRole = r.unknown or nil }
 			end
 			m.rounds[d.round] = m.rounds[d.round] or {}
 			m.rounds[d.round][r.id] = r.roll
@@ -303,7 +303,7 @@ function Mirror.os(d, m)
 	local entrant = m.entrants[d.id]
 	if entrant then
 		entrant.offSpec = d.os or nil
-		entrant.unknownSpec = nil
+		entrant.unknownRole = nil
 	end
 end
 
@@ -460,13 +460,15 @@ local function CloseIfAllRerolled(m)
 end
 
 -- Tells a player without the addon why their roll didn't count, once per roll, by whisper (5.3). Players with it see
--- the reason in the window.
+-- the reason in the window. In test mode on your own, your own refused rolls are whispered to you, to try it out.
 local function WhisperRefusal(m, member, why)
-	if not member or users[member.guid] or not ns.settings.announce or not IsInGroup() then return end
+	if not member or users[member.guid] or not ns.settings.announce or not (IsInGroup() or ns.IsTestMode()) then return end
 	m.whispered = m.whispered or {}
 	if m.whispered[member.guid] then return end
 	m.whispered[member.guid] = true
 	local text = ("Your roll for %s didn't count: %s."):format(ns.ItemLink(m.item), why)
+	-- A roll in the wrong range can still be put right while the roll's open.
+	if why:find("^rolled ") then text = text .. " Type /roll 100 instead." end
 	ns.Capture("whisper", member.name, text)
 	ChatThrottleLib:SendChatMessage("NORMAL", ns.PREFIX_LIVE, text, "WHISPER", nil, member.name)
 end
@@ -538,7 +540,6 @@ function ns.ClaimWriter()
 	else
 		Announce(ns.PlayerName() .. " is running loot rolls.")
 	end
-	ns.InspectGroup()
 	ns.Fire("SESSION_CHANGED")
 end
 
@@ -706,6 +707,40 @@ function ns.ToggleOffSpec(id)
 	if engine:SetOffSpec(id, offSpec) then Emit("os", { sid = m.sid, id = id, os = offSpec or nil }) end
 end
 
+-- An officer's say on which roles an item is for (4.6), recorded in the ledger so every client agrees and
+-- later drops use it. If the writer is running an open roll for the item, everyone's off-spec flag follows it.
+function ns.SetItemRoles(item, suits)
+	if not ns.IsOfficer(ns.PlayerName()) then return end
+	local list = {}
+	for _, role in ipairs(ns.ROLE_ORDER) do
+		if suits[role] then list[#list + 1] = role end
+	end
+	local ok, err = ns.AppendEntry({ type = "roles", item = item, roles = list, time = GetServerTime(), by = ns.PlayerName() })
+	if not ok then return ns.Print("The roles couldn't be recorded: " .. err .. ".") end
+	local m = live.mirror
+	if not (ns.AmWriter() and engine and m and m.state == "open" and m.item == item and not m.greed) then return end
+	for id, entrant in pairs(m.entrants) do
+		local offSpec = ns.IsOffSpec(id, item)
+		if offSpec ~= nil and offSpec ~= (entrant.offSpec or false) and engine:SetOffSpec(id, offSpec) then
+			Emit("os", { sid = m.sid, id = id, os = offSpec or nil })
+		end
+	end
+end
+
+-- Why you can't take part in the roll that's on, if you can't, for the window.
+function ns.WhyCantRoll()
+	local m = live.mirror
+	if not IsActive(m) then return nil end
+	local me = UnitGUID("player")
+	if m.state == "reroll" then
+		return not m.contenders[me] and "Only the tied players reroll" or nil
+	end
+	if m.greed then return nil end
+	if ns.ledger and ns.ledger.state:HasWon(me, m.item) then return "You've won this item" end
+	if not ns.CanUse(me, m.item) then return "Your class can't use this item" end
+	return nil
+end
+
 -- Whether this player can roll right now: a roll or their reroll is open, and they haven't rolled or passed in it.
 function ns.CanRoll()
 	local m = live.mirror
@@ -823,7 +858,6 @@ ns.On("GROUP_ROSTER_UPDATE", function()
 			ns.Print(live.writer .. ", the writer, has left the group. Another officer can take over with /pl writer.")
 			live.writer = nil
 		end
-		if ns.AmWriter() then ns.InspectGroup() end
 		if not queried then
 			queried = true
 			SendLive("query", {})
@@ -855,7 +889,7 @@ function ns.SessionRows()
 	end
 	for id, entrant in pairs(m.entrants) do
 		local row = Row(id)
-		row.name, row.pity, row.offSpec, row.unknownSpec = entrant.name or row.name, entrant.pity, entrant.offSpec, entrant.unknownSpec
+		row.name, row.pity, row.offSpec, row.unknownRole = entrant.name or row.name, entrant.pity, entrant.offSpec, entrant.unknownRole
 	end
 	for r = 1, #m.rounds do
 		for id, roll in pairs(m.rounds[r]) do
