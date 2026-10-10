@@ -9,8 +9,15 @@ local DEFAULTS = {
 	minQuality = 4, -- epic
 	announce = true,
 	raidWarning = true, -- headlines as raid warnings, when the writer is leader or an assistant
+	autoAward = false, -- the writer awards each roll as soon as it's decided
+	autoRoll = 0, -- 1 rolls for you in rerolls, 2 in every roll you can take part in (ns.AUTO_ROLL)
 	autoShow = true,
+	autoShowLoot = true, -- open the window on the Loot tab when new loot is added
 	pityByBoss = false, -- group My pity by boss inside each raid
+	hideWon = false, -- leave items you've won off My pity
+	hideUnrollable = false, -- leave loot you can't roll on off the Loot tab, unless you're the writer
+	minimapButton = true, -- list the addon in the minimap's addon compartment
+	autoAcceptTrade = false, -- accept trades that only hand over won items, without clicking Trade
 	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
 	collapsed = {}, -- My pity groups the player has collapsed
 }
@@ -99,19 +106,18 @@ end
 ---@field classes table<string, string> class file names by GUID, to colour those names
 ---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
 ---@field testMode boolean?
+---@field settings table the options, the same for every character
 
--- Ledgers and names are account-wide; settings are per profile.
+-- Everything is account-wide, settings included, so every character has the same options.
 ns.On("ADDON_LOADED", function(name)
 	if name ~= addonName then return end
 	local db = LibStub("AceDB-3.0"):New("PitifulLootDB",
-		{ global = { ledgers = {}, names = {}, classes = {}, testOfficers = {} }, profile = DEFAULTS }, true)
-	local function UseProfile() ns.settings = db.profile end
-	db.RegisterCallback(ns, "OnProfileChanged", UseProfile)
-	db.RegisterCallback(ns, "OnProfileCopied", UseProfile)
-	db.RegisterCallback(ns, "OnProfileReset", UseProfile)
+		{ global = { ledgers = {}, names = {}, classes = {}, testOfficers = {}, settings = DEFAULTS } }, true)
+	-- Nothing is kept per profile, so AceDB's profile records are left out of the saved file.
+	db.sv.profiles, db.sv.profileKeys = nil, nil
 	ns.database = db
 	ns.saved = db.global --[[@as PitifulLootGlobal]]
-	UseProfile()
+	ns.settings = ns.saved.settings
 end)
 
 -- A guild's ledger, replayed from its saved entries. If a saved entry won't replay, the saved copy is left alone so

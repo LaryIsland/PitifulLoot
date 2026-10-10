@@ -66,7 +66,8 @@ function Apply.award(state, e)
 	for id, entrant in pairs(e.entrants) do
 		local who = type(entrant.name) == "string" and entrant.name or id
 		if not first[id] then return who .. " is an entrant but didn't roll" end
-		if state:HasWon(id, e.item) then return who .. " has already won this item" end
+		-- Anyone may greed-roll, winners of the item included (4.8).
+		if not e.greed and state:HasWon(id, e.item) then return who .. " has already won this item" end
 		if entrant.pity ~= state:GetPity(id, e.item, e.greed, e.time) then
 			return ("%s's pity (%d) doesn't match the table (%d)"):format(who, entrant.pity, state:GetPity(id, e.item, e.greed, e.time))
 		end

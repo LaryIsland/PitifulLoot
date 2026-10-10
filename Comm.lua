@@ -51,10 +51,20 @@ function ns.Receive(prefix, kind, handler)
 	handlers[prefix][kind] = handler
 end
 
+-- callback(sender) for every message on the prefix from another client, whatever it is.
+local watchers = {}
+function ns.OnMessage(prefix, callback)
+	watchers[prefix] = watchers[prefix] or {}
+	table.insert(watchers[prefix], callback)
+end
+
 local function OnMessage(prefix, payload, channel, sender)
 	if ns.IsMe(sender) or (prefix == ns.PREFIX_SYNC and ns.IsTestMode()) then return end
 	local kind, data = Decode(payload)
 	ns.Capture("receive", prefix, kind, data, sender, channel)
+	if kind then
+		for _, callback in ipairs(watchers[prefix] or {}) do callback(sender) end
+	end
 	local handler = kind and handlers[prefix][kind]
 	if not handler then return end
 	local ok, err = xpcall(handler, ns.WithStack, data, sender, channel)

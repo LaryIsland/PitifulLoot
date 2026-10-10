@@ -2,10 +2,13 @@ local _, ns = ...
 
 local HELP = {
 	"/pl - show or hide the window",
-	"/pl options - open the settings",
+	"/pl options - open the Options tab",
 	"/pl writer - run loot rolls for this group (officers)",
 	"/pl roll <item> [copies] [greed] - start a roll",
 	"/pl close | cancel | award - end the current round, drop the roll, or record and hand out the item",
+	"/pl disenchant - mark a BoP item no one rolled on to be disenchanted",
+	"/pl sell - mark a BoE no one greed-rolled on to be kept and sold",
+	"/pl pass - pass on the roll in progress",
 	"/pl os <name> - flip a roll's off-spec flag before the first round closes",
 	"/pl pity [name] - list pity",
 	"/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild by hand (officers)",
@@ -70,6 +73,9 @@ function commands.writer() ns.ClaimWriter() end
 function commands.close() ns.CloseRound() end
 function commands.cancel() ns.CancelRoll() end
 function commands.award() ns.Award() end
+function commands.disenchant() ns.Disenchant() end
+function commands.sell() ns.KeepToSell() end
+function commands.pass() ns.Pass() end
 function commands.pity(args) ShowPity(args[2]) end
 function commands.resync(args) ns.Resync(args[2]) end
 function commands.help() for _, line in ipairs(HELP) do ns.Print(line) end end

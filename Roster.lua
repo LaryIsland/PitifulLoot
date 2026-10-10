@@ -20,21 +20,32 @@ local function GroupUnits()
 	return units
 end
 
--- Names and GUIDs can be secret in combat; if any are, the group is read again next time it's needed.
+-- A unit's full name. In Forever UnitName gives the first name and the surname separately, and the game shows them
+-- together, as roll messages do ("Lary Island").
+function ns.FullUnitName(unit)
+	local name, surname = UnitName(unit)
+	if not canaccessvalue(name) or not canaccessvalue(surname) then return nil, true end
+	if name and surname and surname ~= "" then return name .. " " .. surname end
+	return name
+end
+
+-- Names and GUIDs can be secret in combat; if any are, the group is read again next time it's needed. Members are
+-- found by their full name and by their first name alone, as addon messages may give either.
 local function RebuildGroup()
 	group = { byName = {}, byGuid = {}, list = {} }
 	groupDirty = false
 	for _, unit in ipairs(GroupUnits()) do
 		local guid = UnitGUID(unit)
-		local name, realm = UnitName(unit)
-		if not canaccessvalue(guid) or not canaccessvalue(name) or not canaccessvalue(realm) then
+		local name, secret = ns.FullUnitName(unit)
+		if secret or not canaccessvalue(guid) then
 			groupDirty = true
 		elseif guid and name then
 			local _, class, classID = UnitClass(unit)
 			local member = { unit = unit, guid = guid, name = name, class = class, classID = classID }
 			group.byGuid[guid] = member
 			group.byName[name] = member
-			if realm and realm ~= "" then group.byName[name .. "-" .. realm] = member end
+			local first = name:match("^(%S+)")
+			group.byName[first] = group.byName[first] or member
 			group.list[#group.list + 1] = member
 			ns.RememberName(guid, name, class)
 		end
@@ -68,10 +79,14 @@ local function RebuildGuild()
 			local member = { name = name, rank = rank, guid = guid, class = class, officer = rank ~= nil and IsOfficerRank(rank, officerRanks) }
 			if member.officer and online then guild.onlineOfficers[#guild.onlineOfficers + 1] = member end
 			guild.byName[name] = member
-			guild.byName[ns.ShortName(name)] = guild.byName[ns.ShortName(name)] or member
+			local short = ns.ShortName(name)
+			guild.byName[short] = guild.byName[short] or member
+			local first = short:match("^(%S+)")
+			guild.byName[first] = guild.byName[first] or member
 			if guid then
 				guild.byGuid[guid] = member
-				ns.RememberName(guid, ns.ShortName(name), class)
+				-- The group's names are fuller (they have surnames), so a guild name doesn't replace one.
+				if not (ns.saved and ns.saved.names[guid]) then ns.RememberName(guid, ns.ShortName(name), class) end
 			end
 		end
 	end
@@ -111,6 +126,7 @@ function ns.GuildMember(key)
 	if not key then return nil end
 	if guildDirty then RebuildGuild() end
 	return guild.byGuid[key] or guild.byName[key] or guild.byName[ns.ShortName(key)]
+		or guild.byName[key:match("^(%S+)") or ""]
 end
 
 function ns.IsOfficer(name)
@@ -156,9 +172,17 @@ function ns.ClassOf(key)
 	if type(key) == "string" and key:match("^Player%-") then return (select(2, GetPlayerInfoByGUID(key))) end
 end
 
+-- A player's full name from a GUID or any name they go by, for showing.
+function ns.DisplayName(key)
+	if type(key) ~= "string" then return key end
+	if key:match("^Player%-") then return ns.NameOf(key) end
+	local member = ns.GroupMember(key) or ns.GuildMember(key)
+	return member and member.guid and ns.NameOf(member.guid) or key
+end
+
 -- A name in its class colour, from a GUID or a name.
 function ns.ColoredName(key, name)
-	name = name or (type(key) == "string" and key:match("^Player%-") and ns.NameOf(key)) or key
+	name = name or ns.DisplayName(key)
 	local color = RAID_CLASS_COLORS[ns.ClassOf(key) or ""]
 	if not color then return name end
 	return ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, name)
