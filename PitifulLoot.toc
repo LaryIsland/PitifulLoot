@@ -20,6 +20,7 @@ Ledger.lua
 Odds.lua
 Rolls.lua
 Roster.lua
+Roles.lua
 Comm.lua
 Sync.lua
 Leavers.lua

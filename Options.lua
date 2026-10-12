@@ -1,7 +1,8 @@
 local _, ns = ...
 
 -- The options, shown on the window's Options tab (UI.lua). They're account-wide, the same for every character.
--- Officer options only matter to the writer; the Options tab hides them unless an officer asks to see them.
+-- Officer options only matter to the writer; the Options tab hides them unless an officer asks to see them. Member
+-- options are about things officers always have, so officers don't see them.
 
 local function Seconds(value)
 	return ("%d sec"):format(value)
@@ -43,7 +44,19 @@ ns.OPTIONS = {
 		tooltip = "Leave the items you've won off the My pity tab." },
 	{ key = "minimapButton", kind = "checkbox", name = "Minimap Button",
 		tooltip = "Show a button on the edge of the minimap: left-click opens the window, right-click its options, and drag it to move it. /pl opens the window either way." },
+	{ key = "showRaidTab", member = true, kind = "checkbox", name = "Show the Raid Tab",
+		tooltip = "Show the Raid tab, with every raider's role, to look at. Officers always have it." },
+	{ key = "tooltipHints", kind = "checkbox", name = "Show Click Hints in Tooltips",
+		tooltip = "End tooltips with the green lines saying what clicking does: on loot, rolls, the minimap button and the resize handle." },
+	{ section = "Profile" },
+	{ kind = "profile", name = "This Character", title = "Profile",
+		tooltip = "These options are kept in a profile. Every character starts on Default, sharing its options; pick or make another profile to give this character options of its own. The menu also copies, resets and deletes profiles." },
 }
+
+-- A green line saying what clicking does, unless the player has hidden them.
+function ns.AddHint(tooltip, text)
+	if ns.settings.tooltipHints then GameTooltip_AddInstructionLine(tooltip, text) end
+end
 
 -- Changing an option.
 function ns.SetOption(key, value)
@@ -51,6 +64,55 @@ function ns.SetOption(key, value)
 	ns.Fire("SETTINGS_CHANGED", key)
 	if ns.RefreshWindow then ns.RefreshWindow() end
 end
+
+-- Profiles are AceDB's. Switching to another, or copying into or resetting this one, changes every option at once,
+-- so SETTINGS_CHANGED has no key.
+function ns.ProfileChanged()
+	ns.settings = ns.database.profile
+	ns.Fire("SETTINGS_CHANGED")
+	if ns.RefreshWindow then ns.RefreshWindow() end
+end
+
+-- The profiles there are, by name.
+function ns.Profiles()
+	local names = ns.database:GetProfiles()
+	table.sort(names)
+	return names
+end
+
+-- A new profile for this character, with the default options.
+function ns.NewProfile(name)
+	name = (name or ""):match("^%s*(.-)%s*$")
+	if name == "" then return end
+	for _, existing in ipairs(ns.Profiles()) do
+		if existing == name then return ns.Print(("There's already a profile called %s."):format(name)) end
+	end
+	ns.database:SetProfile(name)
+end
+
+-- The dialogs behind the profile menu (UI.lua). Copying, resetting and deleting ask first, as they can't be undone.
+local function Confirm(text, accept)
+	return { text = text, button1 = YES, button2 = NO, OnAccept = accept, timeout = 0, whileDead = 1, hideOnEscape = 1 }
+end
+StaticPopupDialogs.PITIFULLOOT_NEW_PROFILE = {
+	text = "Name the new profile. It starts with the default options.",
+	button1 = ACCEPT, button2 = CANCEL,
+	hasEditBox = 1, maxLetters = 32,
+	OnShow = function(dialog) dialog:GetEditBox():SetFocus() end,
+	OnAccept = function(dialog) ns.NewProfile(dialog:GetEditBox():GetText()) end,
+	EditBoxOnEnterPressed = function(editBox)
+		ns.NewProfile(editBox:GetText())
+		editBox:GetParent():Hide()
+	end,
+	EditBoxOnEscapePressed = function(editBox) editBox:GetParent():Hide() end,
+	timeout = 0, whileDead = 1, hideOnEscape = 1,
+}
+StaticPopupDialogs.PITIFULLOOT_COPY_PROFILE = Confirm("Copy the options from %s into %s?",
+	function(_, from) ns.database:CopyProfile(from) end)
+StaticPopupDialogs.PITIFULLOOT_RESET_PROFILE = Confirm("Reset every option in %s to its default?",
+	function() ns.database:ResetProfile() end)
+StaticPopupDialogs.PITIFULLOOT_DELETE_PROFILE = Confirm("Delete the profile %s?",
+	function(_, name) ns.database:DeleteProfile(name) end)
 
 function ns.OpenOptions()
 	ns.ShowWindow("options")

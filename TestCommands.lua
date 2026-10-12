@@ -33,7 +33,8 @@ local HELP = {
 	"/pl test warn - add a warning, to see how one shows",
 	"/pl test trade <item> - with a player targeted: a copy of <item> from your bags is awaiting trade to them",
 	"/pl test owed <item> - with a player targeted: a copy of <item> is awaiting trade from them to you",
-	"/pl test probe [item] - what the game says about loot methods, the minimap menu, specs, your target and an item, to copy",
+	"/pl test probe [item] - what the game says about loot methods, the minimap menu, specs and talents, your target and an item, to copy",
+	"/pl test raid [players] [edge] - fill the Raid tab with made-up raiders (20, up to 40), some with roles unknown (edge: one of each kind); left-click fakes an inspect; again to empty it",
 }
 
 local fakes = {} -- made-up rollers: { id, name }
@@ -110,8 +111,10 @@ function test.reset()
 	ns.CancelRoll()
 	ns.loot = { groups = {} }
 	ns.Fire("LOOT_CHANGED")
+	test.forgetRaiders()
+	ns.ForgetRoles()
 	ns.UpdateGuild()
-	ns.Print("The test ledger and the Loot tab are empty.")
+	ns.Print("The test ledger, the Loot tab and the Raid tab are empty.")
 end
 
 function test.pity(args)
@@ -308,7 +311,8 @@ local function ShowCopyBox(title, text)
 end
 
 -- What the client says about everything the beta checks are unsure of, in one place to copy: the loot methods
--- (is master loot there?), the minimap's addons menu, specs and roles, your target's inspected spec, and an item.
+-- (is master loot there?), the minimap's addons menu, specs, talents and roles, your target's inspected spec and
+-- talents, and an item.
 function test.probe(args)
 	local lines = { "Pitiful Loot probe, " .. date("%Y-%m-%d %H:%M"), "Client: " .. Try(GetBuildInfo) }
 	local function Add(label, value) lines[#lines + 1] = label .. ": " .. value end
@@ -347,6 +351,25 @@ function test.probe(args)
 	Add("Specs for your class", Try(C_SpecializationInfo.GetNumSpecializationsForClassID, select(3, UnitClass("player"))))
 	Add("Spec selection enabled", Try(C_SpecializationInfo.IsSpecSelectionEnabled))
 	Add("Your assigned role", Try(UnitGroupRolesAssigned, "player"))
+	-- The talents the role guess reads, from the trait tree: how many could be read, and those taken.
+	local function Talents(inspect)
+		local talents = ns.ReadTalents(inspect)
+		if not talents then return "can't be read" end
+		local list = {}
+		for name in pairs(talents.taken) do list[#list + 1] = name end
+		table.sort(list)
+		local trees = {}
+		for _, tree in ipairs(talents.trees or {}) do
+			trees[#trees + 1] = ("%s (last node %s%s)"):format(Text(tree.name), Text(tree.capstone), tree.taken and ", taken" or "")
+		end
+		return ("%d read, taken: %s; trees: %s"):format(talents.read, list[1] and table.concat(list, ", ") or "none",
+			trees[1] and table.concat(trees, ", ") or "can't be told apart")
+	end
+	Add("Spec groups", ("active %s of %s, talent config %s"):format(Try(C_SpecializationInfo.GetActiveSpecGroup), Try(GetNumSpecGroups),
+		Try(C_ClassTalents.GetActiveConfigID)))
+	Add("Your talents", Talents(false))
+	Add("Role from talents", Text(ns.MyRole()))
+	Add("Profile", Text(ns.database:GetCurrentProfile()))
 
 	local item = ns.ItemID(args[3])
 	if item then
@@ -376,8 +399,171 @@ function test.probe(args)
 		local spec = C_SpecializationInfo.GetInspectSpecialization and select(2, pcall(C_SpecializationInfo.GetInspectSpecialization, "target"))
 		Add("Target's inspected spec", Text(spec))
 		Add("That spec's info", Try(GetSpecializationInfoByID, spec))
+		Add("Target's talents", ("valid inspect data %s; %s"):format(Try(C_Traits.HasValidInspectData), Talents(true)))
 		Finish()
 	end)
+end
+
+-- Made-up raiders for the Raid tab, after you in group 1: every class, roles from each source, and some unknown,
+-- so a full raid can be seen on your own. With "edge", the first of them are one of each case where the fallback
+-- role is used: never inspected, each way an inspect can fail, a capstone that leaves two roles, and talents with no
+-- capstone. Left-clicking one fakes an inspect, going through those outcomes in turn and then finding their role.
+-- They're only on the Raid tab; nothing else counts them.
+local SURNAMES = { "Ash", "Brook", "Crane", "Dale", "Frost", "Hale", "Marsh", "Stone", "Thorne", "Vale" }
+local RAID_ROLES = { "TANK", "HEALER", "DAMAGER", false, "DAMAGER" } -- false: unknown
+local RAID_SOURCES = { "raid", "talents", "inspect" }
+-- Class and reason for each edge case (no reason: never inspected).
+local EDGE_CASES = {
+	{ "WARRIOR" }, { "PRIEST", "far" }, { "PALADIN", "noreply" }, { "DRUID", "unreadable" },
+	{ "DRUID", "ambiguous" }, { "SHAMAN", "ambiguous" }, { "PALADIN", "nocapstone" },
+}
+-- What a fake inspect finds, in turn; ambiguous only for classes whose capstone can be.
+local FAKE_OUTCOMES = { "far", "noreply", "unreadable", "ambiguous", "nocapstone", "found" }
+local FAKE_INSPECT_TIME = 1.5
+local AMBIGUOUS_CLASSES = { DRUID = true, SHAMAN = true }
+local raiders -- guid -> member, while on
+local real = {
+	GroupMembers = ns.GroupMembers, GroupMember = ns.GroupMember, RoleInfo = ns.RoleInfo, RoleReason = ns.RoleReason,
+	IsInspecting = ns.IsInspecting, InspectRaider = ns.InspectRaider, InspectUnknown = ns.InspectUnknown,
+	IsSweeping = ns.IsSweeping,
+}
+local fakeSweep -- the made-up raiders a fake "Inspect Unknown" is still to try, while it's on
+
+function ns.GroupMembers()
+	local members = real.GroupMembers()
+	if not raiders then return members end
+	local all = {}
+	for _, member in ipairs(members) do all[#all + 1] = member end
+	for _, raider in ipairs(raiders) do all[#all + 1] = raider end
+	return all
+end
+
+function ns.GroupMember(key)
+	return raiders and key and raiders[key] or real.GroupMember(key)
+end
+
+function ns.RoleInfo(guid, ignoreOfficer)
+	local raider = raiders and raiders[guid]
+	if raider and raider.role ~= nil then
+		local role, source, by = real.RoleInfo(guid, ignoreOfficer)
+		if source == "officer" or source == "class" then return role, source, by end
+		if raider.role then return raider.role, raider.source end
+		return nil
+	end
+	return real.RoleInfo(guid, ignoreOfficer)
+end
+
+function ns.RoleReason(guid)
+	local raider = raiders and raiders[guid]
+	if raider then return raider.why end
+	return real.RoleReason(guid)
+end
+
+function ns.IsInspecting(guid)
+	local raider = raiders and raiders[guid]
+	if raider then return raider.inspecting == true end
+	return real.IsInspecting(guid)
+end
+
+-- A fake inspect: the raider's next outcome, after a moment (at once if they're "too far away"). A failure keeps a
+-- role that was known, and a role found replaces one an officer set, as a real one does. `onDone(found)` is for a
+-- fake sweep, which doesn't print each one.
+function ns.InspectRaider(member, onDone)
+	local raider = raiders and raiders[member.guid]
+	if not raider then return real.InspectRaider(member) end
+	if raider.inspecting or not ns.RoleChoices(raider) then return end
+	repeat
+		raider.next = (raider.next or 0) % #FAKE_OUTCOMES + 1
+	until FAKE_OUTCOMES[raider.next] ~= "ambiguous" or AMBIGUOUS_CLASSES[raider.class]
+	local outcome = FAKE_OUTCOMES[raider.next]
+	local function Finish()
+		raider.inspecting = nil
+		local name = ns.ColoredName(raider.guid, raider.name)
+		if outcome == "found" then
+			local choices = ns.RoleChoices(raider)
+			raider.role, raider.source, raider.why = choices.HEALER and "HEALER" or "TANK", "inspect", nil
+			if not onDone and select(2, ns.RoleInfo(raider.guid)) == "officer" then ns.SetRole(raider.guid, nil) end
+			if not onDone then ns.Print(("%s's talents say %s."):format(name, ns.ROLE_NAMES[raider.role]:lower())) end
+		else
+			raider.why = outcome
+			if raider.role == nil then raider.role = false end
+			if not onDone then ns.Print(("%s: %s"):format(name, (ns.UNKNOWN_REASONS[outcome]:gsub("\n", " ")))) end
+		end
+		ns.Fire("ROLES_CHANGED")
+		if onDone then onDone(outcome == "found") end
+	end
+	if outcome == "far" then return Finish() end
+	raider.inspecting = true
+	ns.Fire("ROLES_CHANGED")
+	C_Timer.After(FAKE_INSPECT_TIME, Finish)
+end
+
+-- A fake "Inspect Unknown": each made-up raider whose role is unknown gets the next fake inspect, in turn.
+function ns.InspectUnknown()
+	if not raiders then return real.InspectUnknown() end
+	if fakeSweep then return end
+	fakeSweep = {}
+	for _, member in ipairs(ns.UnknownRaiders()) do
+		if raiders[member.guid] then fakeSweep[#fakeSweep + 1] = member end
+	end
+	local tried, found = #fakeSweep, 0
+	local function Next(gotOne)
+		if gotOne then found = found + 1 end
+		local raider = fakeSweep and table.remove(fakeSweep, 1)
+		if raider then return ns.InspectRaider(raider, Next) end
+		fakeSweep = nil
+		ns.Fire("ROLES_CHANGED")
+		ns.Print(("Inspected %d raider%s: %d role%s found."):format(tried, tried == 1 and "" or "s", found, found == 1 and "" or "s"))
+	end
+	ns.Fire("ROLES_CHANGED")
+	Next()
+end
+
+function ns.IsSweeping()
+	if raiders then return fakeSweep ~= nil end
+	return real.IsSweeping()
+end
+
+function test.forgetRaiders()
+	raiders, fakeSweep = nil, nil
+end
+
+function test.raid(args)
+	if not InTestMode() then return end
+	if raiders then
+		raiders = nil
+		ns.Print("The made-up raiders have gone.")
+		return ns.Fire("ROSTER_CHANGED")
+	end
+	local count, edge = 20, false
+	for i = 3, #args do
+		if args[i]:lower() == "edge" then edge = true else count = tonumber(args[i]) or count end
+	end
+	count = math.max(math.min(math.floor(count), 40), edge and #EDGE_CASES + 1 or 2)
+	raiders = {}
+	for i = 2, count do
+		local case = edge and EDGE_CASES[i - 1]
+		local class = case and case[1] or CLASSES[(i * 4) % #CLASSES + 1]
+		local guid = ("Player-0-RAID%04d"):format(i)
+		local raider = {
+			guid = guid, unit = "player", class = class, subgroup = math.ceil(i / 5),
+			name = NAMES[(i - 1) % #NAMES + 1] .. " " .. SURNAMES[(i - 1) % #SURNAMES + 1],
+		}
+		if case then
+			raider.role, raider.why = false, case[2]
+		elseif ns.RoleChoices(raider) then
+			-- Classes with a choice of roles get one from the list, from a source in turn, or none.
+			local role = RAID_ROLES[i % #RAID_ROLES + 1]
+			if role and not ns.RoleChoices(raider)[role] then role = "DAMAGER" end
+			raider.role, raider.source = role, role and RAID_SOURCES[i % #RAID_SOURCES + 1] or nil
+		end
+		raiders[#raiders + 1] = raider
+		raiders[guid] = raider
+		ns.RememberName(guid, raider.name, class)
+	end
+	ns.Print(("%d made-up raiders are on the Raid tab%s."):format(count - 1, edge and ", the first with each kind of unknown role" or ""))
+	ns.ShowWindow("raid")
+	ns.Fire("ROSTER_CHANGED")
 end
 
 function test.help()

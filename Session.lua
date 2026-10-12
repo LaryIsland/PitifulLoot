@@ -7,7 +7,7 @@ local _, ns = ...
 --   writer  {}                                       an officer claiming the writer role
 --   open    {sid, item, copies, greed, opened, secs, instance, boss} a roll starts (and where the item dropped)
 --   rolls   {sid, round, list}                       rolls counted ({id, name, roll, pity, os}) or refused ({name, roll, why})
---   os      {sid, id, os}                            the writer corrected an off-spec flag
+--   os      {sid, id, os, unknown}                   the writer corrected an off-spec flag (`unknown`: by a fallback role)
 --   reroll  {sid, round, ids, slots, winners, secs}  a tie that needs rolling off
 --   decided {sid, winners}
 --   cancel  {sid}
@@ -16,9 +16,15 @@ local _, ns = ...
 --   disenchant {sid, sell}                           no one rolled on a BoP item, so it's to be disenchanted; or with
 --                                                    `sell`, no one greed-rolled on a BoE, so it's kept to be sold
 --   pass    {sid, round}                             anyone: they won't roll in this round
---   query   {}                                       anyone: who's the writer, and what's happening?
+--   query   {role, why}                              anyone: who's the writer, and what's happening? (and their role, or
+--                                                    why their talents don't settle one: nocapstone, ambiguous)
 --   state   {mirror, left}                           the writer's reply
---   here    {}                                       anyone, to a new writer: this player has the addon
+--   here    {role, why}                              anyone, to a new writer: this player has the addon, and the role
+--                                                    their talents suggest (ns.MyRole), which they resend if it changes
+--   roles   {r}                                      the writer's view of everyone's role ({guid = {role, source}})
+--   setrole {id, role}                               an officer: that raider's role from now on (none: work it out)
+--   inspected {id, role, why}                        an officer, to the writer: the role their inspect of a raider read,
+--                                                    or why it couldn't (ns.UNKNOWN_REASONS)
 
 local LIVE = ns.PREFIX_LIVE
 local FLUSH_DELAY = 0.5
@@ -37,6 +43,7 @@ local pending, pendingRound, flushing = {}, nil, false
 local count = 0
 local queried = false
 local autoRollTimer, warnTimer, tieTimer
+local rolesSent -- the roles the writer last told the group, serialized
 -- Players the writer knows have the addon (by GUID), who are told why a roll didn't count in the window rather than
 -- by whisper.
 local users = {}
@@ -303,7 +310,7 @@ function Mirror.os(d, m)
 	local entrant = m.entrants[d.id]
 	if entrant then
 		entrant.offSpec = d.os or nil
-		entrant.unknownRole = nil
+		entrant.unknownRole = d.unknown or nil
 	end
 end
 
@@ -488,18 +495,18 @@ local function WriterRoll(name, roll, low, high)
 	if low ~= ns.ROLL_MIN or high ~= ns.ROLL_MAX then return Refuse(("rolled %d-%d"):format(low, high)) end
 	local member = ns.GroupMember(name)
 	if not member then return Refuse("not in the group") end
-	local id, pity, offSpec = member.guid, nil, nil
+	local id, pity, offSpec, guessed = member.guid, nil, nil, nil
 	-- Anyone can greed-roll, and greed is for gold, so nobody is off-spec for it (4.8).
 	if m.round == 1 then
 		local state = ns.ledger.state
 		if not m.greed and state:HasWon(id, m.item) then return Refuse("already won this item") end
 		if not m.greed and not ns.CanUse(id, m.item) then return Refuse("can't use this item") end
 		pity = state:GetPity(id, m.item, m.greed, m.opened)
-		if m.greed then offSpec = false else offSpec = ns.IsOffSpec(id, m.item) end
+		if m.greed then offSpec = false else offSpec, guessed = ns.IsOffSpec(id, m.item) end
 	end
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
 	if not ok then return Refuse(why) end
-	QueueRoll({ id = id, name = member.name, roll = roll, pity = pity, os = offSpec or nil, unknown = m.round == 1 and offSpec == nil or nil })
+	QueueRoll({ id = id, name = member.name, roll = roll, pity = pity, os = offSpec or nil, unknown = guessed or nil })
 	CloseIfAllRerolled(m)
 end
 
@@ -540,6 +547,9 @@ function ns.ClaimWriter()
 	else
 		Announce(ns.PlayerName() .. " is running loot rolls.")
 	end
+	rolesSent = nil
+	ns.Fire("ROLES_CHANGED")
+	ns.InspectRoles()
 	ns.Fire("SESSION_CHANGED")
 end
 
@@ -582,6 +592,7 @@ function ns.StartRoll(item, copies, greed)
 	local what = copies > 1 and ("%s (%d copies)"):format(ns.ItemLink(item), copies) or ns.ItemLink(item)
 	Announce(("%sroll for %s: /roll now (%ds)."):format(greed and "greed " or "", what, ns.settings.rollTime), true)
 	ScheduleClose(ns.settings.rollTime)
+	ns.InspectRoles(true)
 	-- A last call a few seconds before the opening round closes, for players without the addon's timer.
 	local started = live.mirror
 	if warnTimer then warnTimer:Cancel() end
@@ -727,6 +738,64 @@ function ns.SetItemRoles(item, suits)
 	end
 end
 
+-- A role found while a roll's first round is open (an inspect answering) settles the off-spec flag of a player whose
+-- role wasn't known when they rolled.
+-- An officer's say on a role settles it for anyone who has rolled, whether it was known or not.
+ns.Listen("ROLE_FOUND", function(guid, settled)
+	local m = live.mirror
+	if not (ns.AmWriter() and engine and m and m.state == "open" and not m.greed) then return end
+	local entrant = m.entrants[guid]
+	if not (entrant and (entrant.unknownRole or settled)) then return end
+	local offSpec, guessed = ns.IsOffSpec(guid, m.item)
+	if offSpec ~= nil and engine:SetOffSpec(guid, offSpec) then
+		Emit("os", { sid = m.sid, id = guid, os = offSpec or nil, unknown = guessed or nil })
+	end
+end)
+
+-- Roles (Roles.lua) -----------------------------------------------------------------------------------------------
+
+-- An officer's say on a raider's role, from the Raid tab, for the whole group; nil goes back to working it out.
+function ns.SetRole(guid, role)
+	if not ns.IsOfficer(ns.PlayerName()) then return end
+	if ns.ApplyRole(guid, role, ns.PlayerName()) then SendLive("setrole", { id = guid, role = role }) end
+end
+
+ns.Receive(LIVE, "setrole", function(d, sender)
+	if type(d) ~= "table" or type(d.id) ~= "string" or not ns.IsOfficer(sender) then return end
+	ns.ApplyRole(d.id, d.role, ns.DisplayName(sender))
+end)
+
+-- An officer's inspect from the Raid tab goes to the writer, whose view of the roles everyone sees.
+function ns.TellInspected(guid, role, why)
+	if live.writer then SendLive("inspected", { id = guid, role = role, why = why }, live.writer) end
+end
+
+ns.Receive(LIVE, "inspected", function(d, sender)
+	if type(d) ~= "table" or type(d.id) ~= "string" or not ns.IsOfficer(sender) or not ns.AmWriter() then return end
+	if d.role then ns.ApplyInspect(d.id, d.role, true) else ns.InspectFailed(d.id, d.why) end
+end)
+
+-- The writer tells the group the roles it knows (it inspects players, so it knows most), a moment after they change
+-- and only if they did, so the Raid tab shows the same for every officer.
+local ROLES_DELAY = 1
+local rolesTimer
+ns.Listen("ROLES_CHANGED", function()
+	if rolesTimer or not ns.AmWriter() then return end
+	rolesTimer = C_Timer.NewTimer(ROLES_DELAY, function()
+		rolesTimer = nil
+		if not ns.AmWriter() then return end
+		local map = ns.RoleMap()
+		local text = ns.Serialize(map)
+		if text == rolesSent then return end
+		rolesSent = text
+		SendLive("roles", { r = map })
+	end)
+end)
+
+ns.Receive(LIVE, "roles", function(d, sender)
+	if type(d) == "table" and live.writer and ns.SameName(sender, live.writer) then ns.SetWriterRoles(d.r) end
+end)
+
 -- Why you can't take part in the roll that's on, if you can't, for the window.
 function ns.WhyCantRoll()
 	local m = live.mirror
@@ -809,6 +878,14 @@ end
 
 -- Handover and late joiners ---------------------------------------------------------------------------------------
 
+local toldRole -- the role this client last told the writer
+
+-- What this client says about its own role: the role its talents show, or why they don't settle one.
+local function MyRoleMessage()
+	local role, why = ns.MyRole()
+	return { role = role, why = (why == "nocapstone" or why == "ambiguous") and why or nil }
+end
+
 ns.Receive(LIVE, "writer", function(_, sender)
 	if not ns.IsOfficer(sender) then return end
 	if ns.AmWriter() then
@@ -816,9 +893,25 @@ ns.Receive(LIVE, "writer", function(_, sender)
 		ns.Print(sender .. " has taken over as the writer.")
 	end
 	live.writer = sender
-	SendLive("here", {}, sender)
+	local said = MyRoleMessage()
+	toldRole = said.role or said.why
+	SendLive("here", said, sender)
 	ns.Fire("SESSION_CHANGED")
 end)
+
+ns.Receive(LIVE, "here", function(d, sender)
+	if type(d) == "table" then ns.ToldRole(sender, d.role, d.why) end
+end)
+
+-- A new spec or talents can mean a new role; the writer hears of it, though a role already used for a roll stays.
+local function RetellRole()
+	local said = MyRoleMessage()
+	if (said.role or said.why) == toldRole or not live.writer or ns.AmWriter() then return end
+	toldRole = said.role or said.why
+	SendLive("here", said, live.writer)
+end
+ns.On("PLAYER_TALENT_UPDATE", RetellRole)
+ns.On("ACTIVE_TALENT_GROUP_CHANGED", RetellRole)
 
 -- Whoever sends the writer anything has the addon: a reply to a new writer, a query, a pass.
 ns.OnMessage(LIVE, function(sender)
@@ -826,18 +919,21 @@ ns.OnMessage(LIVE, function(sender)
 	if member then users[member.guid] = true end
 end)
 
-ns.Receive(LIVE, "query", function(_, sender)
+ns.Receive(LIVE, "query", function(d, sender)
+	if type(d) == "table" then ns.ToldRole(sender, d.role, d.why) end
 	if not ns.AmWriter() then return end
 	local m = live.mirror and ns.Copy(live.mirror)
 	if m then m.odds, m.myOdds, m.ends, m.autoRollAt, m.rolledRound = nil, nil, nil, nil, nil end
 	SendLive("state", {
 		mirror = m, left = live.mirror and live.mirror.ends and live.mirror.ends - GetTime(), loot = ns.Copy(ns.loot),
+		roles = ns.RoleMap(),
 	}, sender)
 end)
 
 ns.Receive(LIVE, "state", function(d, sender)
 	if type(d) ~= "table" or not ns.IsOfficer(sender) then return end
 	live.writer = sender
+	ns.SetWriterRoles(d.roles)
 	local m = d.mirror
 	if type(m) == "table" and type(m.sid) == "string" and type(m.entrants) == "table" and type(m.rounds) == "table" then
 		m.partial = true
@@ -860,7 +956,7 @@ ns.On("GROUP_ROSTER_UPDATE", function()
 		end
 		if not queried then
 			queried = true
-			SendLive("query", {})
+			SendLive("query", MyRoleMessage())
 		end
 	end
 	ns.Fire("SESSION_CHANGED")
@@ -919,7 +1015,10 @@ function ns.SessionRows()
 		if seen then
 			local row = Row(me)
 			row.roll, row.round, row.stale, row.passed = seen, m.round, nil, nil
-			if not m.entrants[me] then row.offSpec = not m.greed and ns.IsOffSpec(me, m.item) or nil end
+			if not m.entrants[me] and not m.greed then
+				local offSpec, guessed = ns.IsOffSpec(me, m.item)
+				row.offSpec, row.unknownRole = offSpec or nil, guessed or nil
+			end
 		elseif m.rolledRound == m.round then
 			Row(me).rolling = true
 		end

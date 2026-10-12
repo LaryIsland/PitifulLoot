@@ -1,7 +1,7 @@
 local _, ns = ...
 
--- Who is in the group and the guild by name and GUID, which guild members are officers (6.3), each raider's role
--- for off-spec rolls (4.6), and what an item says about who can use it (4.5) and which roles it's for.
+-- Who is in the group and the guild by name and GUID, which guild members are officers (6.3), and what an item says
+-- about who can use it (4.5) and which roles it's for (4.6). Each raider's own role is in Roles.lua.
 
 local group, guild
 local groupDirty, guildDirty = true, true
@@ -31,14 +31,16 @@ end
 local function RebuildGroup()
 	group = { byName = {}, byGuid = {}, list = {} }
 	groupDirty = false
-	for _, unit in ipairs(GroupUnits()) do
+	for index, unit in ipairs(GroupUnits()) do
 		local guid = UnitGUID(unit)
 		local name, secret = ns.FullUnitName(unit)
 		if secret or not canaccessvalue(guid) then
 			groupDirty = true
 		elseif guid and name then
 			local _, class, classID = UnitClass(unit)
-			local member = { unit = unit, guid = guid, name = name, class = class, classID = classID }
+			-- Their raid group (1 to 8); a party is all group 1.
+			local subgroup = IsInRaid() and select(3, GetRaidRosterInfo(index)) or 1
+			local member = { unit = unit, guid = guid, name = name, class = class, classID = classID, subgroup = subgroup or 1 }
 			group.byGuid[guid] = member
 			group.byName[name] = member
 			local first = name:match("^(%S+)")
@@ -311,40 +313,7 @@ function ns.CanUse(guid, item)
 	return CanEquip(class, item)
 end
 
--- Roles --------------------------------------------------------------------------------------------------------
-
--- The roles each class can fill. A class with one role is always that role; a role its class can't fill is ignored.
-local CLASS_ROLES = {
-	WARRIOR = { TANK = true, DAMAGER = true },
-	PRIEST = { HEALER = true, DAMAGER = true },
-	PALADIN = { TANK = true, HEALER = true, DAMAGER = true },
-	SHAMAN = { TANK = true, HEALER = true, DAMAGER = true },
-	DRUID = { TANK = true, HEALER = true, DAMAGER = true },
-	MAGE = { DAMAGER = true }, WARLOCK = { DAMAGER = true }, ROGUE = { DAMAGER = true }, HUNTER = { DAMAGER = true },
-}
-
--- Each raider's role is the one the raid leader gave them in the game's role menu, kept from the first time it's
--- seen so swapping roles doesn't dodge the off-spec penalty; a class that can only do damage always does. Someone
--- else with no role is unknown, and counts as main-spec until the writer says otherwise.
-local roles = {}
-
-function ns.RoleOf(guid)
-	if not roles[guid] then
-		local member = ns.GroupMember(guid)
-		local fills = member and CLASS_ROLES[member.class]
-		local role = member and UnitGroupRolesAssigned(member.unit)
-		if canaccessvalue(role) and ns.ROLE_NAMES[role] and (not fills or fills[role]) then
-			roles[guid] = role
-		elseif fills and not next(fills, next(fills)) then
-			return (next(fills))
-		end
-	end
-	return roles[guid]
-end
-
-ns.On("GROUP_ROSTER_UPDATE", function()
-	if not IsInGroup() then roles = {} end
-end)
+-- Item roles ---------------------------------------------------------------------------------------------------
 
 -- What an item's stats say about the roles it's for. Strength and agility suit tanks too, so plate with defense
 -- reads as tank and damage. To be tuned.
@@ -386,11 +355,12 @@ function ns.ItemRoles(item)
 	return nil
 end
 
--- Whether the item is off-spec for the player: true or false, or nil if their role isn't known.
+-- Whether the item is off-spec for the player, true or false (nil if they aren't in the group), and whether that's
+-- only by the fallback for a role that's unknown.
 function ns.IsOffSpec(guid, item)
-	local suits = ns.ItemRoles(item)
-	if not suits then return false end
-	local role = ns.RoleOf(guid)
+	local role, guessed = ns.RoleOf(guid)
 	if not role then return nil end
-	return not suits[role]
+	local suits = ns.ItemRoles(item)
+	if not suits then return false, guessed end
+	return not suits[role], guessed
 end

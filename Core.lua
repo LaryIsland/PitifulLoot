@@ -3,6 +3,7 @@ local addonName, ns = ...
 ns.ledgers = {}
 ns.warnings = {}
 
+-- The options, kept in AceDB profiles (Options.lua).
 local DEFAULTS = {
 	rollTime = 30,
 	rerollTime = 20,
@@ -17,9 +18,9 @@ local DEFAULTS = {
 	hideWon = false, -- leave items you've won off My pity
 	hideUnrollable = false, -- leave loot you can't roll on off the Loot tab, unless you're the writer
 	minimapButton = true, -- the button on the edge of the minimap (MinimapButton.lua)
-	minimapIcon = {}, -- LibDBIcon's record of that button: where it sits, and whether it's hidden
+	tooltipHints = true, -- the lines in tooltips saying what clicking does
+	showRaidTab = false, -- a member showing the Raid tab, to look at (officers always have it)
 	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
-	collapsed = {}, -- My pity groups the player has collapsed
 }
 ns.DEFAULTS = DEFAULTS
 
@@ -106,18 +107,26 @@ end
 ---@field classes table<string, string> class file names by GUID, to colour those names
 ---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
 ---@field testMode boolean?
----@field settings table the options, the same for every character
+---@field minimapIcon table LibDBIcon's record of the minimap button: where it sits, and whether it's hidden
+---@field collapsed table<string, boolean> My pity groups the player has collapsed
+---@field position table? where the window was left
+---@field height number? the window's height, if the player resized it
 
--- Everything is account-wide, settings included, so every character has the same options.
+-- Everything but the options is account-wide. The options are in profiles, which every character starts out sharing
+-- (Default), and which are switched, copied and reset from the Options tab (Options.lua).
 ns.On("ADDON_LOADED", function(name)
 	if name ~= addonName then return end
-	local db = LibStub("AceDB-3.0"):New("PitifulLootDB",
-		{ global = { ledgers = {}, names = {}, classes = {}, testOfficers = {}, settings = DEFAULTS } }, true)
-	-- Nothing is kept per profile, so AceDB's profile records are left out of the saved file.
-	db.sv.profiles, db.sv.profileKeys = nil, nil
+	local db = LibStub("AceDB-3.0"):New("PitifulLootDB", {
+		profile = DEFAULTS,
+		global = { ledgers = {}, names = {}, classes = {}, testOfficers = {}, minimapIcon = {}, collapsed = {},
+			roleOverrides = {} },
+	}, true)
 	ns.database = db
 	ns.saved = db.global --[[@as PitifulLootGlobal]]
-	ns.settings = ns.saved.settings
+	ns.settings = db.profile
+	for _, event in ipairs({ "OnProfileChanged", "OnProfileCopied", "OnProfileReset" }) do
+		db.RegisterCallback(ns, event, ns.ProfileChanged)
+	end
 end)
 
 -- A guild's ledger, replayed from its saved entries. If a saved entry won't replay, the saved copy is left alone so

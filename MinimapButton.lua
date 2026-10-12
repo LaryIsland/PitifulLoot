@@ -2,8 +2,8 @@ local addonName, ns = ...
 
 -- A button on the edge of the minimap, since Forever keeps its addons menu hidden: left-click for the window,
 -- right-click for its options, and drag it round the edge to move it. It's made by LibDBIcon, the library most addons
--- use for theirs, so it looks like them and minimap button collectors know it. The Minimap Button option hides it;
--- LibDBIcon keeps its place in the settings (minimapIcon).
+-- use for theirs, so it looks like them and minimap button collectors know it. The Minimap Button option (in the
+-- profile) hides it; LibDBIcon keeps its place, the same for every character (minimapIcon).
 
 local launcher = LibStub("LibDataBroker-1.1"):NewDataObject(addonName, {
 	type = "launcher",
@@ -18,16 +18,16 @@ local launcher = LibStub("LibDataBroker-1.1"):NewDataObject(addonName, {
 	end,
 	OnTooltipShow = function(tooltip)
 		GameTooltip_SetTitle(tooltip, "Pitiful Loot")
-		GameTooltip_AddInstructionLine(tooltip, "Left-click to show or hide the window.")
-		GameTooltip_AddInstructionLine(tooltip, "Right-click for options.")
-		GameTooltip_AddInstructionLine(tooltip, "Drag to move.")
+		ns.AddHint(tooltip, "Left-click to show or hide the window.")
+		ns.AddHint(tooltip, "Right-click for options.")
+		ns.AddHint(tooltip, "Drag to move.")
 	end,
 })
 
 local icon = LibStub("LibDBIcon-1.0")
 
 local function Update()
-	local saved = ns.settings.minimapIcon
+	local saved = ns.saved.minimapIcon
 	saved.hide = not ns.settings.minimapButton
 	if icon:IsRegistered(addonName) then
 		icon:Refresh(addonName, saved)
@@ -40,7 +40,7 @@ ns.On("ADDON_LOADED", function(name)
 	if name == addonName then Update() end
 end)
 ns.Listen("SETTINGS_CHANGED", function(key)
-	if key == "minimapButton" then Update() end
+	if key == nil or key == "minimapButton" then Update() end
 end)
 
 -- For tests and the probe.

@@ -21,6 +21,7 @@ local VIEWS = {
 	{ key = "session", label = "Roll", icon = "Interface\\Icons\\INV_Misc_Dice_02" },
 	{ key = "pity", label = "My pity", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01" },
 	{ key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Box_02" }, -- only there once loot has been seen
+	{ key = "raid", label = "Raid", icon = "Interface\\Icons\\Achievement_GuildPerk_EverybodysFriend" }, -- see ns.ShowsRaidTab
 	{ key = "options", label = "Options", icon = "Interface\\Icons\\INV_Misc_Gear_01" }, -- always at the bottom
 }
 local EMPTY = {
@@ -28,6 +29,7 @@ local EMPTY = {
 	pity = "You haven't built up pity on anything yet.",
 	loot = "Loot a boss as master looter to list its items here.",
 	options = "",
+	raid = "Join a group to see its roles.",
 }
 local STATES = {
 	open = "Rolling", reroll = "Reroll", decided = "Decided", cancelled = "Cancelled", awarded = "Awarded",
@@ -61,6 +63,11 @@ end
 
 local function AsOfficer()
 	return ns.IsOfficer(ns.PlayerName()) and not ns.ViewAsMember()
+end
+
+-- The Raid tab is always there for officers; members can show it with an option, to look at.
+function ns.ShowsRaidTab()
+	return AsOfficer() or ns.settings.showRaidTab == true
 end
 
 local function NameList(ids)
@@ -100,7 +107,9 @@ local function SessionLines()
 		local columns = {
 			row.roll and (row.round > 1 and "Rerolled %d" or "Rolled %d"):format(row.roll) or "",
 			row.pity and row.pity > 0 and ("Pity +" .. row.pity) or "",
-			row.offSpec and ("Off-spec %d"):format(ns.OFFSPEC_MODIFIER) or (row.unknownRole and "Role unknown") or "",
+			-- A penalty from a fallback role, while theirs is unknown, has a question mark.
+			row.offSpec and ("Off-spec %d%s"):format(ns.OFFSPEC_MODIFIER, row.unknownRole and "?" or "")
+				or (row.unknownRole and "Role unknown") or "",
 		}
 		-- The roll and what went into it; the total is the number being hovered.
 		local waiting = m.state == "reroll" and row.contender and "Hasn't rerolled" or "Hasn't rolled"
@@ -244,23 +253,26 @@ local function TradeLines(out)
 	for _, row in ipairs(rows) do out[#out + 1] = row end
 end
 
--- The game's icon for a role, to put in text: the plain ones Forever's group finder lists groups with, not the
--- circled ones GetIconForRole gives.
+-- The game's icon for a role: the borderless ones Forever's group finder shows for players listed on their own, not
+-- the circled ones it shows for groups.
 local ROLE_ICONS = {
-	TANK = "groupfinder-icon-role-large-tank", HEALER = "groupfinder-icon-role-large-heal", DAMAGER = "groupfinder-icon-role-large-dps",
+	TANK = "groupfinder-icon-role-micro-tank", HEALER = "groupfinder-icon-role-micro-heal", DAMAGER = "groupfinder-icon-role-micro-dps",
 }
-local ROLE_ICON_SIZE = 18
+local ROLE_ICON_SIZE = 16
+-- The icons' art has a margin of its own, so they sit closer together, and to the text, than their size suggests;
+-- and a little lower than the middle of the text, level with its letters.
+local ROLE_ICON_STEP, ROLE_ICON_INSET, ROLE_ICON_GAP, ROLE_ICON_DROP = ROLE_ICON_SIZE - 2, -2, 1, 1
 local function RoleIcon(role)
 	return CreateAtlasMarkup(ROLE_ICONS[role], ROLE_ICON_SIZE, ROLE_ICON_SIZE)
 end
 
--- The icons for the roles in a set, in the usual order.
-local function RoleIcons(suits)
-	local icons = {}
+-- The roles in a set, in the usual order.
+local function RoleList(suits)
+	local list = {}
 	for _, role in ipairs(ns.ROLE_ORDER) do
-		if suits[role] then icons[#icons + 1] = RoleIcon(role) end
+		if suits[role] then list[#list + 1] = role end
 	end
-	return table.concat(icons, " ")
+	return list
 end
 
 -- An officer's menu for an item, from a right-click: a greed roll, if the writer can start one, and the item's roles
@@ -331,9 +343,8 @@ local function LootLines()
 			-- Once it's won, the winners show how many there were.
 			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = entry.copies .. " copies" end
 			if entry.boe then detail[#detail + 1] = "Binds on Equip" end
-			-- The icons of the roles it's for, unless it's for any of them.
+			-- The icons of the roles it's for, unless it's for any of them, start the details.
 			local suits = not done and ns.ItemRoles(item)
-			if suits then detail[#detail + 1] = RoleIcons(suits) end
 			local status
 			if entry.status == "rolling" then
 				status = Colored("Rolling now", NORMAL_FONT_COLOR)
@@ -393,6 +404,7 @@ local function LootLines()
 				icon = ItemIcon(item),
 				title = done and Colored(name or ns.ItemLink(item), GREY) or ns.ItemLink(item),
 				detail = table.concat(detail, "  ·  "),
+				roles = suits and RoleList(suits) or nil,
 				value = value,
 				note = note,
 				contender = entry.status == "rolling",
@@ -430,7 +442,7 @@ ns.On("PLAYER_ENTERING_WORLD", function()
 end)
 
 local function FocusRaid(raids)
-	local collapsed = ns.settings.collapsed
+	local collapsed = ns.saved.collapsed
 	for raid, group in pairs(raids) do
 		collapsed[raid] = raid ~= focusRaid or nil
 		if raid == focusRaid then
@@ -481,7 +493,7 @@ local function PityLines()
 	end
 
 	if focusRaid then FocusRaid(raids) end
-	local collapsed = ns.settings.collapsed
+	local collapsed = ns.saved.collapsed
 	for _, raid in ipairs(SortedKeys(raids, OTHER_RAID)) do
 		local group = raids[raid]
 		out[#out + 1] = {
@@ -522,7 +534,7 @@ local function ShowTooltip(owner, line)
 		GameTooltip_SetTitle(GameTooltip, line.tip[1])
 		for i = 2, #line.tip do GameTooltip_AddNormalLine(GameTooltip, line.tip[i]) end
 	end
-	for _, hint in ipairs(line.hints or {}) do GameTooltip_AddInstructionLine(GameTooltip, hint) end
+	for _, hint in ipairs(line.hints or {}) do ns.AddHint(GameTooltip, hint) end
 	GameTooltip:Show()
 end
 
@@ -553,6 +565,11 @@ local function BuildRow(row)
 	row.Detail:SetJustifyH("LEFT")
 	row.Detail:SetWordWrap(false)
 	row.Detail:SetTextColor(GREY.r, GREY.g, GREY.b)
+	row.RoleIcons = {}
+	for i = 1, #ns.ROLE_ORDER do
+		row.RoleIcons[i] = row:CreateTexture(nil, "ARTWORK")
+		row.RoleIcons[i]:SetSize(ROLE_ICON_SIZE, ROLE_ICON_SIZE)
+	end
 	row.Columns = {}
 	for i = 1, DETAIL_COLUMNS do
 		local column = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
@@ -613,8 +630,24 @@ local function InitRow(row, line)
 	row.Title:SetPoint("TOPLEFT", left, -9)
 	row.Title:SetPoint("RIGHT", right, 0)
 	row.Title:SetText(line.title)
+	-- Role icons start the details. They're textures beside the text rather than in it, as they're taller than the
+	-- text and would push its line down.
+	local _, fontHeight = row.Detail:GetFont()
+	local indent = 0
+	for i, icon in ipairs(row.RoleIcons) do
+		local role = line.roles and line.roles[i]
+		icon:SetShown(role ~= nil)
+		if role then
+			icon:SetAtlas(ROLE_ICONS[role])
+			icon:ClearAllPoints()
+			icon:SetPoint("LEFT", row.Title, "BOTTOMLEFT", ROLE_ICON_INSET + indent,
+				-6 - (tonumber(fontHeight) or 10) / 2 - ROLE_ICON_DROP)
+			indent = indent + ROLE_ICON_STEP
+		end
+	end
+	if indent > 0 then indent = indent + ROLE_ICON_INSET + (ROLE_ICON_SIZE - ROLE_ICON_STEP) + ROLE_ICON_GAP end
 	row.Detail:ClearAllPoints()
-	row.Detail:SetPoint("TOPLEFT", row.Title, "BOTTOMLEFT", 0, -6)
+	row.Detail:SetPoint("TOPLEFT", row.Title, "BOTTOMLEFT", indent, -6)
 	row.Detail:SetPoint("RIGHT", right, 0)
 	row.Detail:SetText(line.detail or "")
 	row.Detail:SetShown(line.columns == nil)
@@ -765,8 +798,8 @@ local function UpdateHeader()
 	UpdateTimer()
 end
 
--- The footer runs up to whichever buttons are showing, on one line if it fits and two if not, so a long writer's
--- name never cuts it short. Test mode is in the title, out of its way.
+-- The footer runs up to whichever buttons are showing: the ledger's revision over the writer, always on two lines so
+-- they stay put. Test mode is in the title, out of its way.
 local function UpdateFooter()
 	local ledger
 	if ns.ledger then
@@ -780,15 +813,12 @@ local function UpdateFooter()
 	local primary, cancel = frame.Primary:IsShown(), frame.Cancel:IsShown()
 	status:ClearAllPoints()
 	status:SetPoint("LEFT", frame, "BOTTOMLEFT", FOOTER_LEFT, FOOTER_MIDDLE)
-	local right = 12
 	if primary or cancel then
 		status:SetPoint("RIGHT", primary and frame.Primary or frame.Cancel, "LEFT", -8, 0)
-		right = BUTTON_MARGIN + 8 + (cancel and CANCEL_WIDTH or 0) + (primary and PRIMARY_WIDTH or 0) + (primary and cancel and 4 or 0)
 	else
-		status:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -right, FOOTER_MIDDLE)
+		status:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -12, FOOTER_MIDDLE)
 	end
-	status:SetText(ledger .. "  ·  " .. writer)
-	if TextWidth(status) > WIDTH - FOOTER_LEFT - right then status:SetText(ledger .. "\n" .. writer) end
+	status:SetText(ledger .. "\n" .. writer)
 
 	local title = "Pitiful Loot"
 	if ns.IsTestMode() then
@@ -836,6 +866,7 @@ local function UpdateTabs()
 	for _, tab in ipairs(frame.Tabs) do
 		tab:SetChecked(tab.view == view)
 		if tab.view == "loot" then tab:SetShown(ns.loot.groups[1] ~= nil or view == "loot") end
+		if tab.view == "raid" then tab:SetShown(ns.ShowsRaidTab()) end
 		if tab:IsShown() then
 			tab:ClearAllPoints()
 			if above then
@@ -850,6 +881,7 @@ end
 
 function ns.RefreshWindow()
 	if not frame or not frame:IsShown() then return end
+	if view == "raid" and not ns.ShowsRaidTab() then view = "session" end
 	if view == "session" then
 		lines = SessionLines()
 	elseif view == "loot" then
@@ -859,14 +891,17 @@ function ns.RefreshWindow()
 	else
 		lines = {}
 	end
-	local options = view == "options"
-	frame.ScrollBox:SetShown(not options)
-	frame.ScrollBar:SetShown(not options)
-	frame.Options:SetShown(options)
-	if options then frame.Options:Refresh() end
+	-- The Options and Raid tabs have panels of their own in place of the list.
+	local panel = view == "options" and frame.Options or view == "raid" and frame.Raid or nil
+	frame.ScrollBox:SetShown(not panel)
+	frame.ScrollBar:SetShown(not panel)
+	frame.Options:SetShown(panel == frame.Options)
+	frame.Raid:SetShown(panel == frame.Raid)
+	if panel then panel:Refresh() end
 	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
 	local empty = EMPTY[view]
 	if view == "loot" and ns.loot.groups[1] then empty = "None of the loot is for you." end
+	if view == "raid" and (IsInGroup() or ns.IsTestMode()) then empty = "" end
 	local m = ns.live.mirror
 	if view == "session" and m then
 		empty = (m.state == "open" or m.state == "reroll") and "No one has rolled yet." or "No one rolled."
@@ -880,6 +915,7 @@ end
 
 local function SetView(name)
 	view = name
+	if name == "raid" then ns.InspectRoles(true) end
 	ns.RefreshWindow()
 end
 ns.SetWindowView = SetView
@@ -889,6 +925,8 @@ local function Texture(parent, layer, atlas, subLevel)
 	texture:SetAtlas(atlas)
 	return texture
 end
+
+local SECTION_GAP = 12 -- between a section's title and the options either side of it
 
 -- The Options tab: the options (Options.lua) with the base game's own controls, scrolling if the window is too short
 -- for them all. Officer options only show for officers who tick the box in the bottom right corner.
@@ -904,12 +942,14 @@ local function CreateOptions(parent)
 	panel:SetSize(WIDTH - 50, 1)
 	scroll:SetScrollChild(panel)
 	scroll.Panel = panel
-	local rows = {} -- { option, height, regions = { region, x, y offset }, update }
+	-- { option, height, top, bottom, regions = { region, x, y offset }, update }: `top` and `bottom` are where the row's
+	-- visible art starts and ends, below the row's top.
+	local rows = {}
 
 	local function Tooltip(region, option)
 		region:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip_SetTitle(GameTooltip, option.name)
+			GameTooltip_SetTitle(GameTooltip, option.title or option.name)
 			GameTooltip_AddNormalLine(GameTooltip, option.tooltip, true)
 			GameTooltip:Show()
 		end)
@@ -922,7 +962,7 @@ local function CreateOptions(parent)
 			local header = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
 			header:SetText(option.section)
 			row.regions[1] = { header, "TOPLEFT", 0, -6 }
-			row.height = 28
+			row.height, row.top, row.bottom = 28, 6, 18
 		elseif option.kind == "checkbox" then
 			local box = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
 			box.Text:SetText(option.name)
@@ -931,7 +971,7 @@ local function CreateOptions(parent)
 			Tooltip(box, option)
 			row.regions[1] = { box, "TOPLEFT", 4, 0 }
 			row.update = function() box:SetChecked(ns.settings[option.key]) end
-			row.height = 28
+			row.height, row.top, row.bottom = 28, 5, 27 -- the box is drawn inside its 32 pixels
 		elseif option.kind == "slider" then
 			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 			label:SetText(option.name)
@@ -948,7 +988,7 @@ local function CreateOptions(parent)
 				slider:Init(ns.settings[option.key], option.min, option.max, (option.max - option.min) / option.step,
 					{ [MinimalSliderWithSteppersMixin.Label.Right] = option.format })
 			end
-			row.height = 30
+			row.height, row.top, row.bottom = 30, 2, 22
 		elseif option.kind == "dropdown" then
 			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 			label:SetText(option.name)
@@ -964,7 +1004,35 @@ local function CreateOptions(parent)
 			row.regions[1] = { label, "TOPLEFT", 8, -6 }
 			row.regions[2] = { dropdown, "TOPRIGHT", -4, 0 }
 			row.update = function() dropdown:GenerateMenu() end
-			row.height = 32
+			row.height, row.top, row.bottom = 32, 0, 25
+		elseif option.kind == "profile" then
+			-- Like Edit Mode's layouts: the profiles to pick from, then what can be done with them.
+			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+			label:SetText(option.name)
+			local dropdown = CreateFrame("DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
+			dropdown:SetWidth(150)
+			dropdown:SetupMenu(function(_, root)
+				local db = ns.database
+				local current, others = db:GetCurrentProfile(), {}
+				for _, name in ipairs(ns.Profiles()) do
+					root:CreateRadio(name, function() return db:GetCurrentProfile() == name end, function() db:SetProfile(name) end)
+					if name ~= current then others[#others + 1] = name end
+				end
+				root:CreateDivider()
+				root:CreateButton("New Profile", function() StaticPopup_Show("PITIFULLOOT_NEW_PROFILE") end)
+				local copy = others[1] and root:CreateButton("Copy From")
+				root:CreateButton("Reset to Defaults", function() StaticPopup_Show("PITIFULLOOT_RESET_PROFILE", current) end)
+				local delete = others[1] and root:CreateButton("Delete")
+				for _, name in ipairs(others) do
+					copy:CreateButton(name, function() StaticPopup_Show("PITIFULLOOT_COPY_PROFILE", name, current, name) end)
+					delete:CreateButton(name, function() StaticPopup_Show("PITIFULLOOT_DELETE_PROFILE", name, nil, name) end)
+				end
+			end)
+			Tooltip(dropdown, option)
+			row.regions[1] = { label, "TOPLEFT", 8, -6 }
+			row.regions[2] = { dropdown, "TOPRIGHT", -4, 0 }
+			row.update = function() dropdown:GenerateMenu() end
+			row.height, row.top, row.bottom = 32, 0, 25
 		end
 		rows[#rows + 1] = row
 	end
@@ -979,6 +1047,7 @@ local function CreateOptions(parent)
 	Tooltip(officer, { name = "Officer options",
 		tooltip = "Show the options for running rolls: announcements, roll times and which loot is listed." })
 	scroll.OfficerToggle = officer
+	scroll.Rows = rows
 
 	function scroll:Refresh()
 		local isOfficer = AsOfficer()
@@ -986,9 +1055,13 @@ local function CreateOptions(parent)
 		officer:SetShown(isOfficer)
 		officer:SetChecked(showOfficer)
 		scroll:SetPoint("BOTTOMRIGHT", -30, isOfficer and 80 or 50)
-		local y = 0
+		-- A section's title is as far below the option before it as its first option is below it.
+		local y, previous = 0, nil
 		for _, row in ipairs(rows) do
-			local shown = showOfficer or not row.option.officer
+			local shown = (showOfficer or not row.option.officer) and not (row.option.member and isOfficer)
+			if shown and previous and (row.option.section or previous.row.option.section) then
+				y = previous.bottom - SECTION_GAP + row.top
+			end
 			for _, placed in ipairs(row.regions) do
 				local region, point, x, offset = placed[1], placed[2], placed[3], placed[4]
 				region:ClearAllPoints()
@@ -997,9 +1070,275 @@ local function CreateOptions(parent)
 			end
 			if shown then
 				if row.update then row.update() end
+				previous = { row = row, bottom = y - row.bottom }
 				y = y - row.height
 			end
 		end
+		panel:SetHeight(math.max(-y, 1))
+	end
+	scroll:Hide()
+	return scroll
+end
+
+-- The Raid tab ----------------------------------------------------------------------------------------------------
+
+-- Every raider's role at a glance: the raid groups two to a row, each on a faint panel with its number, and in each a
+-- line per raider of their role's icon and their name, in raid order as the game's raid frames have. A role nobody
+-- knows has a question mark: light blue while their talents haven't been looked at yet (or are being looked at), red
+-- when looking went wrong, so a problem stands out. Officers always have the tab; members can show it with an option,
+-- just to look at. For officers, left-clicking a raider whose class has a choice of roles inspects them to read their
+-- role from their talents, right-clicking sets it for everyone, and "Inspect Unknown" inspects every raider whose
+-- role is unknown (Roles.lua).
+local RAID_ROW_HEIGHT = 18
+local RAID_GAP = 6 -- between the raid groups
+local RAID_SUMMARY_HEIGHT = 26
+local RAID_PANEL_WIDTH = WIDTH - 50
+local RAID_COLUMN_WIDTH = (RAID_PANEL_WIDTH - RAID_GAP) / 2
+local INSPECT_BUTTON_WIDTH = 120
+
+local INSPECTING_COLOR = LIGHTBLUE_FONT_COLOR or { r = 0.53, g = 0.67, b = 1 }
+local DOT_TIME = 0.35 -- seconds each step of the "Inspecting..." dots shows for
+local HIDDEN_DOTS = { r = 0, g = 0, b = 0 } -- the tooltip's background
+local hoveredRaider -- the raider row whose tooltip is showing, to animate it (see the window's OnUpdate)
+
+-- How a raider's role stands: "known"; "unchecked", while their talents haven't been looked at or are being looked
+-- at; or "problem", when looking went wrong. The colour of each unknown kind, for its question mark and its line.
+local function RaiderState(member)
+	if ns.RoleInfo(member.guid) then return "known" end
+	if ns.IsInspecting(member.guid) or not ns.RoleReason(member.guid) then return "unchecked" end
+	return "problem"
+end
+local STATE_COLORS = { unchecked = INSPECTING_COLOR, problem = RED_FONT_COLOR }
+local STATE_TINT_ALPHA = { unchecked = 0.25, problem = 0.35 }
+
+local function QuestionMark(state)
+	return Colored("?", STATE_COLORS[state])
+end
+
+-- "Inspecting their talents" with dots that count up while it's under way. The dots not yet shown are drawn in black,
+-- the tooltip's background, so the line keeps its width.
+local function InspectingText()
+	local shown = math.floor(GetTime() / DOT_TIME) % 4
+	return "Inspecting their talents" .. ("."):rep(shown) .. Colored(("."):rep(3 - shown), HIDDEN_DOTS)
+end
+
+-- A raider's tooltip. Under their name, while their talents are being inspected, it says so, in light blue; or if
+-- looking at their talents last went wrong, why, in red (not when it asked for the role to be set and an officer has).
+-- Then their role, with its icon, in white, and where it came from if that isn't certain. An unknown role has a
+-- question mark in place of the icon, with the fallback role rolls use. It's redrawn as things change while it's
+-- hovered (InitRaiderRow).
+local function ShowRaiderTooltip(owner, member)
+	GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+	GameTooltip_SetTitle(GameTooltip, ns.ColoredName(member.guid, member.name))
+	local role, source, by = ns.RoleInfo(member.guid)
+	local reasonKey, busy = ns.RoleReason(member.guid), ns.IsInspecting(member.guid)
+	if source == "officer" and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
+	local reason = ns.UNKNOWN_REASONS[reasonKey or ""]
+	if busy then
+		GameTooltip_AddColoredLine(GameTooltip, InspectingText(), INSPECTING_COLOR)
+	elseif reason then
+		GameTooltip_AddErrorLine(GameTooltip, reason, true)
+	end
+	if role then
+		GameTooltip_AddHighlightLine(GameTooltip, RoleIcon(role) .. " " .. ns.ROLE_NAMES[role])
+		local from = ns.ROLE_SOURCES[source]
+		if from then GameTooltip_AddNormalLine(GameTooltip, from:format(by and ns.ColoredName(by) or "")) end
+	else
+		local fallback = ns.FallbackRole(member.class, ns.RoleReason(member.guid))
+		GameTooltip_AddHighlightLine(GameTooltip, QuestionMark(RaiderState(member)) .. " " .. ns.ROLE_NAMES[fallback])
+	end
+	GameTooltip_AddNormalLine(GameTooltip, ("Group %d"):format(member.subgroup or 1))
+	if ns.RoleChoices(member) and AsOfficer() then
+		ns.AddHint(GameTooltip, "Left-click to update role from talents")
+		ns.AddHint(GameTooltip, "Right-click to set their role.")
+	end
+	GameTooltip:Show()
+end
+
+-- An officer's menu for a raider: the roles their class can fill, and Automatic, which goes back to working it out.
+local function ShowRaiderMenu(row, member)
+	local choices = ns.RoleOptions(member)
+	local function Set() return select(2, ns.RoleInfo(member.guid)) == "officer" end
+	MenuUtil.CreateContextMenu(row, function(_, root)
+		root:CreateTitle(member.name)
+		for _, role in ipairs(ns.ROLE_ORDER) do
+			if choices[role] then
+				root:CreateRadio(RoleIcon(role) .. " " .. ns.ROLE_NAMES[role],
+					function() return Set() and ns.RoleInfo(member.guid) == role end,
+					function() ns.SetRole(member.guid, role) end)
+			end
+		end
+		-- What Automatic would give, as its icon, or a question mark while that's unknown.
+		local auto = ns.AutoRole(member.guid)
+		root:CreateRadio("Automatic (" .. (auto and RoleIcon(auto) or QuestionMark("unchecked")) .. ")",
+			function() return not Set() end,
+			function() if Set() then ns.SetRole(member.guid, nil) end end)
+	end)
+end
+
+local function BuildRaiderRow(row)
+	row.built = true
+	row:SetSize(RAID_COLUMN_WIDTH, RAID_ROW_HEIGHT)
+	row.Unknown = row:CreateTexture(nil, "BACKGROUND")
+	row.Unknown:SetAllPoints()
+	local highlight = row:CreateTexture(nil, "HIGHLIGHT")
+	highlight:SetAllPoints()
+	highlight:SetColorTexture(1, 1, 1, 0.08)
+	row.Icon = row:CreateTexture(nil, "ARTWORK")
+	row.Icon:SetSize(ROLE_ICON_SIZE, ROLE_ICON_SIZE)
+	row.Icon:SetPoint("LEFT", 2, 0)
+	row.Mark = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	row.Mark:SetPoint("CENTER", row.Icon, "CENTER", 0, 0)
+	row.Mark:SetText("?")
+	row.Name = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	row.Name:SetPoint("LEFT", row.Icon, "RIGHT", 3, 0)
+	row.Name:SetPoint("RIGHT", -12, 0)
+	row.Name:SetJustifyH("LEFT")
+	row.Name:SetWordWrap(false)
+	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	-- Only officers can do anything here; members just look.
+	row:SetScript("OnClick", function(self, button)
+		local member = self.member
+		if not (member and ns.RoleChoices(member) and AsOfficer()) then return end
+		if button == "RightButton" then
+			ShowRaiderMenu(self, member)
+		else
+			ns.InspectRaider(member)
+		end
+	end)
+	row:SetScript("OnEnter", function(self)
+		if not self.member then return end
+		hoveredRaider = self
+		ShowRaiderTooltip(self, self.member)
+	end)
+	row:SetScript("OnLeave", function()
+		hoveredRaider = nil
+		GameTooltip:Hide()
+	end)
+end
+
+---@param row table a raider's row on the Raid tab
+local function InitRaiderRow(row, member)
+	if not row.built then BuildRaiderRow(row) end
+	row.member = member
+	local role = ns.RoleInfo(member.guid)
+	local state = RaiderState(member)
+	row.state = state
+	local color = STATE_COLORS[state]
+	row.Unknown:SetShown(color ~= nil)
+	row.Mark:SetShown(color ~= nil)
+	if color then
+		row.Unknown:SetColorTexture(color.r, color.g, color.b, STATE_TINT_ALPHA[state])
+		row.Mark:SetTextColor(color.r, color.g, color.b)
+	end
+	row.Icon:SetShown(role ~= nil)
+	if role then row.Icon:SetAtlas(ROLE_ICONS[role]) end
+	row.Name:SetText(UnitIsConnected(member.unit) and ns.ColoredName(member.guid, member.name) or Colored(member.name, GREY))
+	row:Show()
+	-- A tooltip being hovered keeps up with what's happening, such as an inspect.
+	if GameTooltip:IsOwned(row) then ShowRaiderTooltip(row, member) end
+end
+
+local function CreateRaid(parent)
+	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
+	scroll:SetPoint("TOPLEFT", 20, -92)
+	scroll:SetPoint("BOTTOMRIGHT", -30, 50)
+	scroll.ScrollBar:SetHideIfUnscrollable(true)
+	scroll.ScrollBar:ClearAllPoints()
+	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 7, 0)
+	scroll.ScrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 7, 0)
+	local panel = CreateFrame("Frame", nil, scroll)
+	panel:SetSize(RAID_PANEL_WIDTH, 1)
+	scroll:SetScrollChild(panel)
+	scroll.Panel = panel
+	-- How many of each role there are, then how many are unchecked and unknown, as question marks in their colours.
+	local summary = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	summary:SetPoint("LEFT", panel, "TOPLEFT", 2, -RAID_SUMMARY_HEIGHT / 2 + 2)
+	scroll.Summary = summary
+	-- Officers inspect every raider whose role is unknown with this, in the top right; known roles are left alone.
+	local inspect = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	inspect:SetSize(INSPECT_BUTTON_WIDTH, 22)
+	inspect:SetPoint("TOPRIGHT", 0, -1)
+	inspect:SetScript("OnClick", function() ns.InspectUnknown() end)
+	inspect:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip_SetTitle(GameTooltip, "Inspect Unknown")
+		GameTooltip_AddNormalLine(GameTooltip,
+			"Inspect each raider whose role isn't known yet, one at a time, to read it from their talents. Raiders whose role is known aren't inspected again.", true)
+		GameTooltip:Show()
+	end)
+	inspect:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	scroll.Inspect = inspect
+	local blocks, rows = {}, {}
+	scroll.Rows = rows
+
+	local function Block(i)
+		if not blocks[i] then
+			local block = { Background = panel:CreateTexture(nil, "BACKGROUND") }
+			block.Background:SetColorTexture(0, 0, 0, 0.3)
+			block.Number = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+			blocks[i] = block
+		end
+		return blocks[i]
+	end
+
+	function scroll:Refresh()
+		local byGroup, counts = {}, {}
+		for _, member in ipairs((IsInGroup() or ns.IsTestMode()) and ns.GroupMembers() or {}) do
+			local group = member.subgroup or 1
+			byGroup[group] = byGroup[group] or {}
+			table.insert(byGroup[group], member)
+			local key = ns.RoleInfo(member.guid) or RaiderState(member)
+			counts[key] = (counts[key] or 0) + 1
+		end
+		local groups = {}
+		for group = 1, 8 do
+			if byGroup[group] then groups[#groups + 1] = group end
+		end
+		local parts = {}
+		for _, role in ipairs(ns.ROLE_ORDER) do
+			parts[#parts + 1] = CreateAtlasMarkup(ROLE_ICONS[role], ROLE_ICON_SIZE, ROLE_ICON_SIZE) .. " " .. (counts[role] or 0)
+		end
+		for _, state in ipairs({ "unchecked", "problem" }) do
+			if counts[state] then parts[#parts + 1] = QuestionMark(state) .. " " .. counts[state] end
+		end
+		summary:SetText(groups[1] and table.concat(parts, "   ") or "")
+		local officer = AsOfficer()
+		inspect:SetShown(officer and groups[1] ~= nil)
+		inspect:SetText(ns.IsSweeping() and "Inspecting..." or "Inspect Unknown")
+		inspect:SetEnabled(not ns.IsSweeping() and ns.UnknownRaiders()[1] ~= nil)
+
+		local used, y = 0, -RAID_SUMMARY_HEIGHT
+		for i = 1, #groups, 2 do
+			local pair = { groups[i], groups[i + 1] }
+			local height = math.max(#byGroup[pair[1]], pair[2] and #byGroup[pair[2]] or 0) * RAID_ROW_HEIGHT + 4
+			for column, group in ipairs(pair) do
+				local x = (column - 1) * (RAID_COLUMN_WIDTH + RAID_GAP)
+				local block = Block(i + column - 1)
+				block.Background:ClearAllPoints()
+				block.Background:SetPoint("TOPLEFT", x, y)
+				block.Background:SetSize(RAID_COLUMN_WIDTH, height)
+				block.Background:Show()
+				block.Number:ClearAllPoints()
+				block.Number:SetPoint("TOPRIGHT", block.Background, "TOPRIGHT", -4, -5)
+				block.Number:SetText(group)
+				block.Number:Show()
+				for k, member in ipairs(byGroup[group]) do
+					used = used + 1
+					rows[used] = rows[used] or CreateFrame("Button", nil, panel)
+					local row = rows[used]
+					row:ClearAllPoints()
+					row:SetPoint("TOPLEFT", x, y - 2 - (k - 1) * RAID_ROW_HEIGHT)
+					InitRaiderRow(row, member)
+				end
+			end
+			y = y - height - RAID_GAP
+		end
+		for i = #groups + 1, #blocks do
+			blocks[i].Background:Hide()
+			blocks[i].Number:Hide()
+		end
+		for i = used + 1, #rows do rows[i]:Hide() end
 		panel:SetHeight(math.max(-y, 1))
 	end
 	scroll:Hide()
@@ -1035,25 +1374,81 @@ local function FitBackground()
 	end
 end
 
+-- Anchors the window by its top left corner, where it's drawn, which can be somewhere else than its anchor says when
+-- it's kept on screen. Anchored by the top, it grows downwards as it's resized.
+local function AnchorWhereDrawn()
+	local left, top = frame:GetLeft(), frame:GetTop()
+	if not (left and top) then return end
+	frame:ClearAllPoints()
+	frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+end
+
+local function SavePosition()
+	local point, _, relativePoint, x, y = frame:GetPoint()
+	ns.saved.position = { point = point, relativePoint = relativePoint, x = x, y = y }
+end
+
+-- The window follows the mouse by itself rather than with the game's StartMoving, which now and then held it by
+-- some other point than the one grabbed, until the next drag. The point where the mouse went down, measured from
+-- where the window is drawn, stays under the mouse.
+local dragger = CreateFrame("Frame")
+dragger:Hide()
+local grab -- the window's top left, from the mouse, when the mouse went down on it
+
+local function Cursor()
+	local x, y = GetCursorPosition()
+	local scale = frame:GetEffectiveScale()
+	return x / scale, y / scale
+end
+
+local function Grab()
+	local left, top = frame:GetLeft(), frame:GetTop()
+	if not (left and top) then return end
+	local x, y = Cursor()
+	grab = { x = left - x, y = top - y }
+end
+
+dragger:SetScript("OnUpdate", function()
+	local x, y = Cursor()
+	frame:ClearAllPoints()
+	frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x + grab.x, y + grab.y)
+end)
+
+-- Ends a move or resize, as the mouse lets go or the window closes during one. Kept on screen, the window may be
+-- drawn somewhere other than the mouse left it, so that's where it's kept.
+local function StopMoving()
+	grab = nil
+	if not (dragger:IsShown() or frame.sizing) then return end
+	dragger:Hide()
+	if frame.sizing then
+		frame.sizing = nil
+		frame:StopMovingOrSizing()
+	end
+	AnchorWhereDrawn()
+	SavePosition()
+end
+
 -- The window drags from its frame, title bar and header. Those are covered by regions that take the mouse (the
 -- item's tooltip, the list), so each is a handle that moves the window.
 local function MakeDragHandle(region)
 	region:EnableMouse(true)
 	region:RegisterForDrag("LeftButton")
-	region:SetScript("OnDragStart", function() frame:StartMoving() end)
-	region:SetScript("OnDragStop", function()
-		frame:StopMovingOrSizing()
-		local point, _, relativePoint, x, y = frame:GetPoint()
-		ns.settings.position = { point = point, relativePoint = relativePoint, x = x, y = y }
+	region:HookScript("OnMouseDown", function(_, button)
+		if button == "LeftButton" then Grab() end
 	end)
+	region:SetScript("OnDragStart", function()
+		if not grab then Grab() end
+		if grab then dragger:Show() end
+	end)
+	region:SetScript("OnDragStop", StopMoving)
 end
 
 local function Create()
 	frame = CreateFrame("Frame", "PitifulLootFrame", UIParent, "PortraitFrameTemplate")
-	frame:SetSize(WIDTH, ns.settings.height or HEIGHT)
+	frame:SetSize(WIDTH, ns.saved.height or HEIGHT)
 	frame:SetResizable(true)
 	frame:SetResizeBounds(WIDTH, MIN_HEIGHT, WIDTH, MAX_HEIGHT)
-	local position = ns.settings.position
+	local position = ns.saved.position
 	if position then
 		frame:SetPoint(position.point, UIParent, position.relativePoint or position.point, position.x, position.y)
 	else
@@ -1067,6 +1462,8 @@ local function Create()
 	frame:EnableMouse(true)
 	MakeDragHandle(frame)
 	MakeDragHandle(frame.TitleContainer)
+	frame:HookScript("OnHide", StopMoving)
+	frame.Dragger = dragger
 	table.insert(UISpecialFrames, "PitifulLootFrame")
 	frame:SetTitle("Pitiful Loot")
 
@@ -1142,7 +1539,7 @@ local function Create()
 		for i = math.max(#ns.warnings - WARNINGS_SHOWN + 1, 1), #ns.warnings do
 			GameTooltip_AddNormalLine(GameTooltip, ns.warnings[i].text)
 		end
-		GameTooltip_AddInstructionLine(GameTooltip, "Click to dismiss.")
+		ns.AddHint(GameTooltip, "Click to dismiss.")
 		GameTooltip:Show()
 	end)
 	alert:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1176,6 +1573,7 @@ local function Create()
 	end)
 	ScrollUtil.InitScrollBoxListWithScrollBar(frame.ScrollBox, frame.ScrollBar, scrollView)
 	frame.Options = CreateOptions(frame)
+	frame.Raid = CreateRaid(frame)
 
 	local resize = CreateFrame("Button", nil, frame)
 	resize:SetSize(32, 12)
@@ -1186,22 +1584,27 @@ local function Create()
 	handle:SetAtlas("lootroll-resizehandle")
 	handle:SetAllPoints()
 	resize:SetScript("OnMouseDown", function(_, button)
-		if button == "LeftButton" then frame:StartSizing("BOTTOM") end
+		if button ~= "LeftButton" then return end
+		AnchorWhereDrawn()
+		frame.sizing = true
+		frame:StartSizing("BOTTOM")
 	end)
 	resize:SetScript("OnMouseUp", function(_, button)
 		if button ~= "LeftButton" then return end
-		frame:StopMovingOrSizing()
-		ns.settings.height = math.floor(frame:GetHeight() + 0.5)
+		StopMoving()
+		ns.saved.height = math.floor(frame:GetHeight() + 0.5)
 	end)
 	resize:SetScript("OnClick", function()
 		frame:SetHeight(HEIGHT)
-		ns.settings.height = nil
+		ns.saved.height = nil
 	end)
+	-- The handle's tooltip is only its hints, so it has none without them.
 	resize:SetScript("OnEnter", function(self)
+		if not ns.settings.tooltipHints then return end
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
 		GameTooltip_SetTitle(GameTooltip, "Resize")
-		GameTooltip_AddInstructionLine(GameTooltip, "Drag to make the window taller or shorter.")
-		GameTooltip_AddInstructionLine(GameTooltip, "Right-click to reset its size.")
+		ns.AddHint(GameTooltip, "Drag to make the window taller or shorter.")
+		ns.AddHint(GameTooltip, "Right-click to reset its size.")
 		GameTooltip:Show()
 	end)
 	resize:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1250,6 +1653,11 @@ local function Create()
 		elapsed = elapsed + delta
 		if elapsed < 0.1 then return end
 		elapsed = 0
+		-- The dots on a hovered raider's "Inspecting..." count up.
+		local row = hoveredRaider
+		if row and row.member and GameTooltip:IsOwned(row) and ns.IsInspecting(row.member.guid) then
+			ShowRaiderTooltip(row, row.member)
+		end
 		local m = ns.live.mirror
 		if m and m.ends then
 			frame.RoundText:SetText(RoundText(m))
@@ -1316,7 +1724,7 @@ local function RefreshSoon()
 	end)
 end
 
-for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "WARNINGS", "SYNC_CHANGED" }) do
+for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "ROLES_CHANGED", "WARNINGS", "SYNC_CHANGED" }) do
 	ns.Listen(name, RefreshSoon)
 end
 -- New loot opens its own group and the items awaiting trade, folds the other groups away, and opens the window on
