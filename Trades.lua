@@ -140,7 +140,7 @@ local function FillTrade()
 			ClickTradeButton(move.to)
 			if CursorHasItem() then
 				ClearCursor()
-				ns.Print(("%s couldn't be put in the trade."):format(ns.ItemLink(move.item)))
+				ns.Print(ns.L.MSG_TRADE_FAILED:format(ns.ItemLink(move.item)))
 			end
 		end)
 	end
@@ -151,10 +151,10 @@ end
 function ns.OfferTrade(id)
 	local member = ns.GroupMember(id)
 	local unit = member and member.unit or (UnitGUID("target") == id and "target") or nil
-	if not unit then return ns.Print(("%s isn't in your group or targeted."):format(ns.ColoredName(id))) end
+	if not unit then return ns.Print(ns.L.MSG_TRADE_NOT_IN_RAID:format(ns.ColoredName(id))) end
 	if trade and not trade.closed and trade.partner == id then return FillTrade() end
 	if not CheckInteractDistance(unit, 2) then
-		return ns.Print(("%s is too far away to trade with."):format(ns.ColoredName(id)))
+		return ns.Print(ns.L.MSG_TRADE_TOO_FAR:format(ns.ColoredName(id)))
 	end
 	InitiateTrade(unit)
 end

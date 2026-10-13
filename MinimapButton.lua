@@ -18,9 +18,9 @@ local launcher = LibStub("LibDataBroker-1.1"):NewDataObject(addonName, {
 	end,
 	OnTooltipShow = function(tooltip)
 		GameTooltip_SetTitle(tooltip, "Pitiful Loot")
-		ns.AddHint(tooltip, "Left-click to show or hide the window.")
-		ns.AddHint(tooltip, "Right-click for options.")
-		ns.AddHint(tooltip, "Drag to move.")
+		ns.AddHint(tooltip, ns.L.HINT_MINIMAP_LEFT)
+		ns.AddHint(tooltip, ns.L.HINT_MINIMAP_RIGHT)
+		ns.AddHint(tooltip, ns.L.HINT_MINIMAP_DRAG)
 	end,
 })
 

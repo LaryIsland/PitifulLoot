@@ -8,7 +8,8 @@ local DEFAULTS = {
 	rollTime = 30,
 	rerollTime = 20,
 	minQuality = 4, -- epic
-	announce = true,
+	announce = true, -- the writer's raid chat messages (5.3)
+	whisperRefusals = true, -- the writer whispers players without the addon whose roll didn't count
 	raidWarning = true, -- headlines as raid warnings, when the writer is leader or an assistant
 	autoAward = false, -- the writer awards each roll as soon as it's decided
 	autoRoll = 0, -- 1 rolls for you in rerolls, 2 in every roll you can take part in (ns.AUTO_ROLL)
@@ -135,7 +136,7 @@ function ns.GetLedger(guild)
 	if not ns.ledgers[guild] then
 		local ledger, bad, err = ns.LoadLedger(ns.saved.ledgers[guild])
 		if err then
-			ledger.loadError = string.format("entry %d: %s", bad, err)
+			ledger.loadError = ns.L.LEDGER_LOAD_ERROR:format(bad, err)
 		else
 			ns.saved.ledgers[guild] = ledger.entries
 		end
@@ -171,7 +172,7 @@ local function UpdateGuild()
 	ns.guild = guild
 	ns.ledger = guild and ns.GetLedger(guild) or nil
 	if ns.ledger and ns.ledger.loadError then
-		ns.Warn("Your saved ledger couldn't be fully loaded (" .. ns.ledger.loadError .. "). /pl resync <officer> fetches theirs.")
+		ns.Warn(ns.L.WARN_LEDGER_LOAD:format(ns.ledger.loadError))
 	end
 	ns.Fire("LEDGER_READY")
 	ns.Fire("LEDGER_CHANGED")

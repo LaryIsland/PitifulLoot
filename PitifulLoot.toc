@@ -10,6 +10,7 @@
 ## OptionalDeps: Ace3
 
 embeds.xml
+Locales\enUS.lua
 Core.lua
 # Temporary, with test mode; remove before release.
 Capture.lua

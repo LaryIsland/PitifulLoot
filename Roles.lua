@@ -1,4 +1,5 @@
 local _, ns = ...
+local L = ns.L
 
 -- Each raider's role (tank, healer or damage) for off-spec rolls (4.6), where it came from, and an officer's say on
 -- it from the Raid tab.
@@ -13,24 +14,24 @@ local CLASS_ROLES = {
 	MAGE = { DAMAGER = true }, WARLOCK = { DAMAGER = true }, ROGUE = { DAMAGER = true }, HUNTER = { DAMAGER = true },
 }
 
--- Each class's talent trees in order, each with its capstone (the level 40 talent, the tree's last node) and the role
--- it means. Only one capstone can be known at a time. The capstone is found by its place, at the foot of its tree;
--- the names are for when the trees can't be told apart, and for the spellbook. Berserk druids and Rage of the
--- Farseer shamans may tank or do damage, so their capstone narrows it to those two and an officer says which (their
--- defense or stamina might tell, later). To be tuned: some paladins with Light's Vigil do damage.
+-- The role each class's capstone means (the level 40 talent, its tree's last node), by the tree's place in the talent
+-- window. Only one capstone can be known at a time. The capstone is found by its place, at the foot of its tree, never
+-- by name, as names are in the client's own language. Berserk druids and Rage of the Farseer shamans may tank or do
+-- damage, so their capstone narrows it to those two and an officer says which (their defense or stamina might tell,
+-- later). To be tuned: some paladins with Light's Vigil do damage.
 local TANK_OR_DAMAGE = { TANK = true, DAMAGER = true }
 local CAPSTONES = {
-	DRUID = { { "Moonkin Form", "DAMAGER" }, { "Berserk", TANK_OR_DAMAGE }, { "Wild Growth", "HEALER" } },
-	PALADIN = { { "Light's Vigil", "HEALER" }, { "Holy Shield", "TANK" }, { "Twist of Light", "DAMAGER" } },
-	PRIEST = { { "Power Infusion", "HEALER" }, { "Prayer of Mending", "HEALER" }, { "Shadowform", "DAMAGER" } },
-	SHAMAN = { { "Lava Burst", "DAMAGER" }, { "Rage of the Farseer", TANK_OR_DAMAGE }, { "Riptide", "HEALER" } },
-	WARRIOR = { { "Mortal Strike", "DAMAGER" }, { "Bloodthirst", "DAMAGER" }, { "Shield Slam", "TANK" } },
+	DRUID = { "DAMAGER", TANK_OR_DAMAGE, "HEALER" }, -- Moonkin Form, Berserk, Wild Growth
+	PALADIN = { "HEALER", "TANK", "DAMAGER" }, -- Light's Vigil, Holy Shield, Twist of Light
+	PRIEST = { "HEALER", "HEALER", "DAMAGER" }, -- Power Infusion, Prayer of Mending, Shadowform
+	SHAMAN = { "DAMAGER", TANK_OR_DAMAGE, "HEALER" }, -- Lava Burst, Rage of the Farseer, Riptide
+	WARRIOR = { "DAMAGER", "DAMAGER", "TANK" }, -- Mortal Strike, Bloodthirst, Shield Slam
 }
 -- The roles a class's ambiguous capstone leaves open, if it has one.
 local AMBIGUOUS = {}
 for class, capstones in pairs(CAPSTONES) do
-	for _, capstone in ipairs(capstones) do
-		if type(capstone[2]) == "table" then AMBIGUOUS[class] = capstone[2] end
+	for _, role in ipairs(capstones) do
+		if type(role) == "table" then AMBIGUOUS[class] = role end
 	end
 end
 -- The role a raider is taken to have while theirs is unknown: priests heal and the rest do damage, except that a
@@ -45,8 +46,8 @@ end
 -- class with one role) says nothing; one worked out from talents and gear together, when that's added, will say
 -- "Found from talents/gear", as it isn't.
 ns.ROLE_SOURCES = {
-	officer = "Set by %s",
-	raid = "Set in Blizzard's role menu",
+	officer = L.ROLE_SOURCE_OFFICER,
+	raid = L.ROLE_SOURCE_RAID,
 	talents = false, -- told by their own client
 	inspect = false, -- read by inspecting them
 }
@@ -54,11 +55,11 @@ ns.ROLE_SOURCES = {
 -- What went wrong the last time a raider's talents were looked at, for the Raid tab: why their role is unknown, or
 -- why an inspect an officer asked for didn't find it.
 ns.UNKNOWN_REASONS = {
-	far = "Too far away. Try again when closer.",
-	noreply = "Inspect got no response. Try again.",
-	unreadable = "Talents couldn't be read. Try again.",
-	ambiguous = "Talents are ambiguous.\nPlease set tank or damage.",
-	nocapstone = "Talents don't reveal their spec.\nPlease set it.",
+	far = L.REASON_FAR,
+	noreply = L.REASON_NOREPLY,
+	unreadable = L.REASON_UNREADABLE,
+	ambiguous = L.REASON_AMBIGUOUS,
+	nocapstone = L.REASON_NOCAPSTONE,
 }
 -- The reasons that are about the talents themselves, which inspecting again won't change: they ask an officer to set
 -- the role, so they're done with once one has.
@@ -82,7 +83,8 @@ local function EntryName(configID, entryID)
 	if canaccessvalue(name) then return name end
 end
 
--- A talent config's talents: `taken`, the names of those taken, as a set; `read`, how many nodes could be read; and
+-- A talent config's talents: `taken`, the names of those taken, as a set (for the probe); `read`, how many nodes could
+-- be read; and
 -- `trees`, each talent tree in order with its last node (`capstone`, by name) and whether that's taken, if the trees
 -- can be told apart. Nil if nothing could be read. Forever's talents are trait trees, its three talent trees being
 -- groups in one, so they're read node by node as its own talent window does. The player's own config is their
@@ -135,41 +137,29 @@ function ns.ReadTalents(inspect)
 	if ok then return talents end
 end
 
--- A capstone's role, or nil and "ambiguous" if it leaves more than one.
-local function CapstoneRole(capstone)
-	if type(capstone[2]) == "table" then return nil, "ambiguous" end
-	return capstone[2]
-end
-
--- The role a class's talents give: the role of the tree whose last node is taken, or of the capstone taken by name
--- if the trees can't be told apart. Otherwise nil and why: "ambiguous", or "nocapstone" if the talents don't say.
+-- The role a class's talents give: the role of the tree whose last node is taken. Otherwise nil and why: "ambiguous"
+-- if that capstone leaves more than one, "nocapstone" if the talents don't say, or "unreadable" if the trees can't be
+-- told apart.
 local function TalentRole(class, talents)
 	local capstones = CAPSTONES[class]
-	if talents.trees and #talents.trees == #capstones then
-		for index, tree in ipairs(talents.trees) do
-			if tree.taken then return CapstoneRole(capstones[index]) end
-		end
-	else
-		for _, capstone in ipairs(capstones) do
-			if talents.taken[capstone[1]] then return CapstoneRole(capstone) end
+	if not (talents.trees and #talents.trees == #capstones) then return nil, "unreadable" end
+	for index, tree in ipairs(talents.trees) do
+		if tree.taken then
+			local role = capstones[index]
+			if type(role) == "table" then return nil, "ambiguous" end
+			return role
 		end
 	end
 	return nil, "nocapstone"
 end
 
 -- The player's role as their talents suggest, for a class that can fill more than one; nil until the client has
--- their talents. If they can't be read, a capstone that's known is a spell the player has. Without one, nil and why
--- (a key of ns.UNKNOWN_REASONS).
+-- their talents. Without one, nil and why (a key of ns.UNKNOWN_REASONS).
 function ns.MyRole()
 	local _, class = UnitClass("player")
-	local capstones = CAPSTONES[class]
-	if not capstones or not C_SpecializationInfo.IsInitialized() then return nil end
+	if not CAPSTONES[class] or not C_SpecializationInfo.IsInitialized() then return nil end
 	local talents = ns.ReadTalents()
 	if talents then return TalentRole(class, talents) end
-	for _, capstone in ipairs(capstones) do
-		local spell = C_Spell.GetSpellInfo(capstone[1])
-		if spell and C_SpellBook.IsSpellKnown(spell.spellID) then return CapstoneRole(capstone) end
-	end
 	return nil, "unreadable"
 end
 
@@ -389,7 +379,8 @@ local function EndSweep()
 	local found, tried = sweep.found, sweep.tried
 	sweep = nil
 	Changed()
-	ns.Print(("Inspected %d raider%s: %d role%s found."):format(tried, tried == 1 and "" or "s", found, found == 1 and "" or "s"))
+	ns.Print(L.SWEEP_DONE:format((tried == 1 and L.SWEEP_RAIDER or L.SWEEP_RAIDERS):format(tried),
+		(found == 1 and L.SWEEP_ROLE or L.SWEEP_ROLES):format(found)))
 end
 
 -- An inspect that's over, or that got no answer in time.
@@ -497,7 +488,7 @@ ns.On("INSPECT_READY", function(guid)
 		if kind == "manual" then
 			local name = ns.ColoredName(guid, member.name)
 			if role then
-				ns.Print(("%s's talents say %s."):format(name, ns.ROLE_NAMES[role]:lower()))
+				ns.Print(L["TALENTS_SAY_" .. role]:format(name))
 			else
 				ns.Print(("%s: %s"):format(name, ReasonText(reason)))
 			end

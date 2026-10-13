@@ -1,4 +1,5 @@
 local _, ns = ...
+local L = ns.L
 
 -- The audit log is the source of truth: the pity table is what you get by replaying every entry in order (6.1).
 -- Each entry carries the hash of the one before it, so two copies with the same head hold the same history.
@@ -57,43 +58,43 @@ local Apply = {}
 function Apply.award(state, e)
 	if type(e.item) ~= "number" or not IsCount(e.copies) or type(e.entrants) ~= "table" or type(e.rounds) ~= "table"
 		or type(e.winners) ~= "table" then
-		return "malformed award"
+		return L.LEDGER_MALFORMED_AWARD
 	end
 	local first = e.rounds[1] or {}
 	for id in pairs(first) do
-		if not e.entrants[id] then return "a roll from " .. tostring(id) .. " with no entrant" end
+		if not e.entrants[id] then return L.LEDGER_NO_ENTRANT:format(tostring(id)) end
 	end
 	for id, entrant in pairs(e.entrants) do
 		local who = type(entrant.name) == "string" and entrant.name or id
-		if not first[id] then return who .. " is an entrant but didn't roll" end
+		if not first[id] then return L.LEDGER_DIDNT_ROLL:format(who) end
 		-- Anyone may greed-roll, winners of the item included (4.8).
-		if not e.greed and state:HasWon(id, e.item) then return who .. " has already won this item" end
+		if not e.greed and state:HasWon(id, e.item) then return L.LEDGER_ALREADY_WON:format(who) end
 		if entrant.pity ~= state:GetPity(id, e.item, e.greed, e.time) then
-			return ("%s's pity (%d) doesn't match the table (%d)"):format(who, entrant.pity, state:GetPity(id, e.item, e.greed, e.time))
+			return L.LEDGER_PITY_MISMATCH:format(who, entrant.pity, state:GetPity(id, e.item, e.greed, e.time))
 		end
 	end
 
 	-- The winners have to be the ones the recorded rolls produce.
 	local session = ns.NewSession(e.item, e.copies, e.greed)
 	for _, round in ipairs(e.rounds) do
-		if session.done then return "a round after the roll was decided" end
+		if session.done then return L.LEDGER_ROUND_AFTER end
 		for id, roll in pairs(round) do
 			local entrant = e.entrants[id]
-			if not entrant then return "a reroll from " .. tostring(id) .. " who isn't an entrant" end
+			if not entrant then return L.LEDGER_REROLL_NOT_ENTRANT:format(tostring(id)) end
 			local ok, why = session:AddRoll(id, roll, entrant.pity, entrant.offSpec)
-			if not ok then return tostring(id) .. ": " .. why end
+			if not ok then return L.LEDGER_BAD_ROLL:format(tostring(id), L["WHY_" .. why:upper()]) end
 		end
 		session:CloseRound()
 	end
-	if not session.done then return "the rolls don't decide the item" end
+	if not session.done then return L.LEDGER_UNDECIDED end
 	local isWinner = {}
 	for _, id in ipairs(session.winners) do isWinner[id] = true end
 	local seen = {}
 	for _, id in ipairs(e.winners) do
-		if not isWinner[id] or seen[id] then return "the winners don't match the rolls" end
+		if not isWinner[id] or seen[id] then return L.LEDGER_WRONG_WINNERS end
 		seen[id] = true
 	end
-	if #e.winners ~= #session.winners then return "the winners don't match the rolls" end
+	if #e.winners ~= #session.winners then return L.LEDGER_WRONG_WINNERS end
 
 	-- Everyone who rolled and didn't win gains pity, once, whatever happened in rerolls (4.1). Only a need win locks the
 	-- winner out of the item; a greed winner can still need-roll it if it becomes an upgrade (4.8).
@@ -110,9 +111,9 @@ end
 
 -- An officer's correction: sets pity on an item, and/or lifts a lockout given by mistake.
 function Apply.adjust(state, e)
-	if type(e.id) ~= "string" or type(e.item) ~= "number" then return "malformed adjustment" end
+	if type(e.id) ~= "string" or type(e.item) ~= "number" then return L.LEDGER_MALFORMED_ADJUSTMENT end
 	if e.pity ~= nil and (type(e.pity) ~= "number" or e.pity % 1 ~= 0 or e.pity < 0 or e.pity > ns.PITY_MAX) then
-		return "pity must be a whole number from 0 to " .. ns.PITY_MAX
+		return L.LEDGER_PITY_RANGE:format(ns.PITY_MAX)
 	end
 	if e.pity ~= nil then Set(e.greed and state.greed or state.pity, e.id, e.item, e.pity) end
 	if e.unlock then Set(state.won, e.id, e.item, nil) end
@@ -122,26 +123,26 @@ end
 -- An officer's say on which raid roles an item is main-spec for, in place of what its stats suggest (4.6). Every role,
 -- or none, means anyone.
 function Apply.roles(state, e)
-	if type(e.item) ~= "number" or type(e.roles) ~= "table" then return "malformed roles" end
+	if type(e.item) ~= "number" or type(e.roles) ~= "table" then return L.LEDGER_MALFORMED_ROLES end
 	local suits = {}
 	for _, role in ipairs(e.roles) do
-		if not ns.ROLE_NAMES[role] then return "unknown role " .. tostring(role) end
+		if not ns.ROLE_NAMES[role] then return L.LEDGER_UNKNOWN_ROLE:format(tostring(role)) end
 		suits[role] = true
 	end
 	state.roles[e.item] = suits
 end
 
 function Apply.leave(state, e)
-	if type(e.id) ~= "string" then return "malformed leave" end
-	if state.left[e.id] then return e.id .. " has already left" end
+	if type(e.id) ~= "string" then return L.LEDGER_MALFORMED_LEAVE end
+	if state.left[e.id] then return L.LEDGER_ALREADY_LEFT:format(e.id) end
 	state.left[e.id] = e.time
 end
 
 -- Decay stops when a leaver rejoins, and what they lost while away is taken off every item (4.9).
 function Apply.rejoin(state, e)
-	if type(e.id) ~= "string" then return "malformed rejoin" end
+	if type(e.id) ~= "string" then return L.LEDGER_MALFORMED_REJOIN end
 	local left = state.left[e.id]
-	if not left then return e.id .. " hasn't left" end
+	if not left then return L.LEDGER_HASNT_LEFT:format(e.id) end
 	local loss = ns.LEAVER_DECAY * WeeksAway(left, e.time)
 	for _, store in ipairs({ state.pity, state.greed }) do
 		for item, pity in pairs(store[e.id] or {}) do
@@ -165,14 +166,14 @@ end
 
 -- Checks an entry follows on from the head and applies it. Nothing changes if it's rejected.
 function Ledger:Accept(entry)
-	if type(entry) ~= "table" then return false, "not an entry" end
+	if type(entry) ~= "table" then return false, L.LEDGER_NOT_ENTRY end
 	local rev = #self.entries + 1
-	if entry.rev ~= rev then return false, "expected revision " .. rev end
-	if entry.prev ~= self.head then return false, "doesn't follow on from revision " .. (rev - 1) end
-	if entry.hash ~= EntryHash(entry) then return false, "the hash doesn't match the contents" end
-	if type(entry.time) ~= "number" then return false, "no time" end
+	if entry.rev ~= rev then return false, L.LEDGER_EXPECTED_REVISION:format(rev) end
+	if entry.prev ~= self.head then return false, L.LEDGER_DOESNT_FOLLOW:format(rev - 1) end
+	if entry.hash ~= EntryHash(entry) then return false, L.LEDGER_BAD_HASH end
+	if type(entry.time) ~= "number" then return false, L.LEDGER_NO_TIME end
 	local apply = Apply[entry.type]
-	if not apply then return false, "unknown entry type " .. tostring(entry.type) end
+	if not apply then return false, L.LEDGER_UNKNOWN_TYPE:format(tostring(entry.type)) end
 	local err = apply(self.state, entry)
 	if err then return false, err end
 	self.entries[rev] = entry

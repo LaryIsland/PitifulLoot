@@ -1,4 +1,5 @@
 local _, ns = ...
+local L = ns.L
 
 -- Keeping everyone's copy of the ledger up to date (6.3). Only officers' copies count: entries are only taken from
 -- officers, and every one is replayed and checked before it's kept. Everyone says hello to the guild when they log
@@ -35,8 +36,7 @@ local function Diverged(officer, rev)
 	local key = officer .. ":" .. rev
 	if reported[key] then return end
 	reported[key] = true
-	ns.Warn(("Your ledger differs from %s's at revision %d. If theirs is right, /pl resync %s replaces yours.")
-		:format(officer, rev, ns.ShortName(officer)))
+	ns.Warn(L.WARN_DIVERGED:format(officer, rev, ns.ShortName(officer)))
 end
 
 local function Pull(officer, replace)
@@ -67,17 +67,17 @@ end)
 function ns.Resync(officer)
 	local member = ns.GuildMember(officer)
 	if not member or not ns.IsOfficer(member.name) then
-		return ns.Print((officer or "?") .. " isn't an officer in your guild.")
+		return ns.Print(L.MSG_NOT_OFFICER:format(officer or "?"))
 	end
-	ns.Print("Fetching the ledger from " .. member.name .. ".")
+	ns.Print(L.MSG_FETCHING:format(member.name))
 	Pull(member.name, true)
 end
 
 -- Records an entry on this officer's copy and tells the guild.
 function ns.AppendEntry(entry)
-	if not ns.ledger then return false, "you're not in a guild" end
-	if not ns.IsOfficer(ns.PlayerName()) then return false, "only officers can record entries" end
-	if ns.SyncBusy() then return false, "your ledger is still syncing" end
+	if not ns.ledger then return false, L.LEDGER_NO_GUILD end
+	if not ns.IsOfficer(ns.PlayerName()) then return false, L.LEDGER_NOT_OFFICER end
+	if ns.SyncBusy() then return false, L.LEDGER_SYNCING end
 	local ok, err = ns.ledger:Append(entry)
 	ns.Capture("append", entry, ok, err)
 	if not ok then return false, err end
@@ -137,7 +137,7 @@ ns.Receive(SYNC, "entries", function(d, sender)
 			local ok, err = ledger:Accept(entry)
 			if not ok then
 				pull = nil
-				ns.Warn(("Revision %s from %s was refused: %s."):format(tostring(type(entry) == "table" and entry.rev), sender, err))
+				ns.Warn(L.WARN_REFUSED:format(tostring(type(entry) == "table" and entry.rev), sender, err))
 				ns.Fire("SYNC_CHANGED")
 				return
 			end
@@ -147,7 +147,7 @@ ns.Receive(SYNC, "entries", function(d, sender)
 	if d.last then
 		if pull.replace then
 			ns.ReplaceLedger(pull.ledger)
-			ns.Print(("Your ledger now matches %s's (revision %d)."):format(sender, #pull.ledger.entries))
+			ns.Print(L.MSG_SYNCED:format(sender, #pull.ledger.entries))
 		end
 		pull = nil
 		ns.Fire("SYNC_CHANGED")
@@ -170,7 +170,7 @@ ns.Receive(SYNC, "entry", function(d, sender)
 	if entry.rev == rev + 1 and not ns.SyncBusy() then
 		local ok, err = ns.ledger:Accept(entry)
 		if not ok then
-			return ns.Warn(("Revision %d from %s was refused: %s."):format(entry.rev, sender, err))
+			return ns.Warn(L.WARN_REFUSED:format(tostring(entry.rev), sender, err))
 		end
 		ns.CheckEntry(entry)
 		ns.Fire("LEDGER_CHANGED")

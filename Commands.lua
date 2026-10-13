@@ -1,20 +1,9 @@
 local _, ns = ...
+local L = ns.L
 
 local HELP = {
-	"/pl - show or hide the window",
-	"/pl options - open the Options tab",
-	"/pl writer - run loot rolls for this group (officers)",
-	"/pl roll <item> [copies] [greed] - start a roll",
-	"/pl close | cancel | award - end the current round, drop the roll, or record and hand out the item",
-	"/pl disenchant - mark a BoP item no one rolled on to be disenchanted",
-	"/pl sell - mark a BoE no one greed-rolled on to be kept and sold",
-	"/pl pass - pass on the roll in progress",
-	"/pl os <name> - flip a roll's off-spec flag before the first round closes",
-	"/pl pity [name] - list pity",
-	"/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild by hand (officers)",
-	"/pl adjust <name> <item> <pity> [unlock] - correct pity, or lift a lockout (officers)",
-	"/pl resync <officer> - replace your ledger with an officer's",
-	"/pl status - ledger revision, writer and warnings",
+	L.HELP_TOGGLE, L.HELP_OPTIONS, L.HELP_WRITER, L.HELP_ROLL, L.HELP_ROUND, L.HELP_DISENCHANT, L.HELP_SELL, L.HELP_PASS,
+	L.HELP_OS, L.HELP_PITY, L.HELP_LEAVE, L.HELP_ADJUST, L.HELP_RESYNC, L.HELP_STATUS,
 	"/pl test - commands for trying the addon out in game (temporary)",
 }
 
@@ -35,19 +24,19 @@ end
 
 local function Officer()
 	if ns.IsOfficer(ns.PlayerName()) then return true end
-	ns.Print("Only officers can do that.")
+	ns.Print(L.MSG_OFFICERS_ONLY)
 end
 
 local function Player(name)
 	local guid = name and ns.FindPlayer(name)
-	if not guid then ns.Print("Can't find " .. tostring(name) .. " in your group or guild.") end
+	if not guid then ns.Print(L.MSG_PLAYER_NOT_FOUND:format(tostring(name))) end
 	return guid
 end
 
 local function Record(entry)
 	entry.time, entry.by = GetServerTime(), ns.PlayerName()
 	local ok, err = ns.AppendEntry(entry)
-	ns.Print(ok and ("Recorded as revision %d."):format(entry.rev) or ("Not recorded: %s."):format(err))
+	ns.Print(ok and L.MSG_RECORDED:format(entry.rev) or L.MSG_NOT_RECORDED:format(err))
 end
 
 local function ShowPity(name)
@@ -59,10 +48,10 @@ local function ShowPity(name)
 		lines[#lines + 1] = ("%s +%d"):format(ns.ItemLink(item), state:GetPity(guid, item, false, GetServerTime()))
 	end
 	for item in pairs(state.greed[guid] or {}) do
-		lines[#lines + 1] = ("%s +%d (greed)"):format(ns.ItemLink(item), state:GetPity(guid, item, true, GetServerTime()))
+		lines[#lines + 1] = L.MSG_PITY_GREED:format(ns.ItemLink(item), state:GetPity(guid, item, true, GetServerTime()))
 	end
-	for item in pairs(state.won[guid] or {}) do lines[#lines + 1] = ns.ItemLink(item) .. " won" end
-	ns.Print(ns.NameOf(guid) .. (lines[1] and ":" or " has no pity yet."))
+	for item in pairs(state.won[guid] or {}) do lines[#lines + 1] = L.MSG_PITY_WON:format(ns.ItemLink(item)) end
+	ns.Print(lines[1] and ns.NameOf(guid) .. ":" or L.MSG_PITY_NONE:format(ns.NameOf(guid)))
 	for _, line in ipairs(lines) do ns.Print("  " .. line) end
 end
 
@@ -83,7 +72,7 @@ function commands.options() ns.OpenOptions() end
 
 function commands.roll(args)
 	local item = ns.ItemID(args[2])
-	if not item then return ns.Print("/pl roll <item link or ID> [copies] [greed]") end
+	if not item then return ns.Print(L.USAGE_ROLL) end
 	ns.StartRoll(item, tonumber(args[3]) or 1, args[3] == "greed" or args[4] == "greed")
 end
 
@@ -106,18 +95,18 @@ function commands.adjust(args)
 	local guid = Officer() and Player(args[2])
 	local item, pity = ns.ItemID(args[3]), tonumber(args[4])
 	if not guid then return end
-	if not item or not pity then return ns.Print("/pl adjust <name> <item> <pity> [unlock]") end
+	if not item or not pity then return ns.Print(L.USAGE_ADJUST) end
 	Record({ type = "adjust", id = guid, item = item, pity = pity, unlock = args[5] == "unlock" or nil })
 end
 
 function commands.status()
 	if ns.ledger then
 		local rev, head = ns.ledger:Revision()
-		ns.Print(("%s ledger: revision %d (%s)%s."):format(ns.guild, rev, head:sub(1, 8), ns.SyncBusy() and ", syncing" or ""))
+		ns.Print((ns.SyncBusy() and L.MSG_STATUS_SYNCING or L.MSG_STATUS):format(ns.guild, rev, head:sub(1, 8)))
 	else
-		ns.Print("No guild ledger loaded.")
+		ns.Print(L.MSG_STATUS_NO_LEDGER)
 	end
-	ns.Print("Writer: " .. (ns.live.writer or "none"))
+	ns.Print(ns.live.writer and L.WRITER:format(ns.live.writer) or L.WRITER_NONE)
 	for i = math.max(#ns.warnings - 4, 1), #ns.warnings do ns.Print("|cffff4040" .. ns.warnings[i].text .. "|r") end
 end
 

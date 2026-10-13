@@ -259,7 +259,7 @@ function ns.GiveLoot(item, winners, quiet)
 		end
 	end
 	if missed[1] and not quiet then
-		ns.Print(("Give %s to %s."):format(ns.ItemLink(item), table.concat(missed, ", ")))
+		ns.Print(ns.L.MSG_GIVE:format(ns.ItemLink(item), table.concat(missed, ", ")))
 	end
 	return given
 end

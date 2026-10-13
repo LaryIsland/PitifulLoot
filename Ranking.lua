@@ -70,17 +70,18 @@ function ns.NewSession(item, copies, greed)
 	}, Session)
 end
 
--- Returns true if the roll counts, or false and why it doesn't.
+-- Returns true if the roll counts, or false and why it doesn't, as a code each client puts into words in its own
+-- language (WHY_ in Locales): over, badroll, already, notreroll or nopity.
 function Session:AddRoll(id, roll, pity, offSpec)
-	if self.done then return false, "the roll is over" end
+	if self.done then return false, "over" end
 	if type(roll) ~= "number" or roll % 1 ~= 0 or roll < ns.ROLL_MIN or roll > ns.ROLL_MAX then
-		return false, "not a roll from 1 to 100"
+		return false, "badroll"
 	end
 	local round = self.rounds[#self.rounds]
-	if round[id] then return false, "already rolled" end
-	if self.contenders and not self.contenders[id] then return false, "not in the reroll" end
+	if round[id] then return false, "already" end
+	if self.contenders and not self.contenders[id] then return false, "notreroll" end
 	if #self.rounds == 1 then
-		if type(pity) ~= "number" then return false, "no pity given" end
+		if type(pity) ~= "number" then return false, "nopity" end
 		self.entrants[id] = { pity = pity, offSpec = offSpec or nil }
 	end
 	round[id] = roll

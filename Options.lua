@@ -1,56 +1,49 @@
 local _, ns = ...
+local L = ns.L
 
 -- The options, shown on the window's Options tab (UI.lua). They're account-wide, the same for every character.
 -- Officer options only matter to the writer; the Options tab hides them unless an officer asks to see them. Member
 -- options are about things officers always have, so officers don't see them.
 
 local function Seconds(value)
-	return ("%d sec"):format(value)
+	return L.OPT_SECONDS:format(value)
 end
 
 -- What auto-roll does: nothing, roll for you in rerolls only, or in every roll you can take part in.
 ns.AUTO_ROLL = { OFF = 0, REROLLS = 1, ALL = 2 }
 
 ns.OPTIONS = {
-	{ section = "Announcements", officer = true },
-	{ key = "announce", officer = true, kind = "checkbox", name = "Announce in Raid Chat",
-		tooltip = "As the writer, post each roll, tie and result to raid chat, so players without the addon can follow along." },
-	{ key = "raidWarning", officer = true, kind = "checkbox", name = "Use Raid Warnings",
-		tooltip = "As the writer, post the start of each roll, ties and results as raid warnings, if you're the raid leader or an assistant. Breakdowns still go to raid chat." },
-	{ section = "Running Rolls", officer = true },
-	{ key = "rollTime", officer = true, kind = "slider", name = "Roll Time", min = 10, max = 120, step = 5, format = Seconds,
-		tooltip = "How long players have to /roll when a roll starts." },
-	{ key = "rerollTime", officer = true, kind = "slider", name = "Reroll Time", min = 10, max = 60, step = 5, format = Seconds,
-		tooltip = "How long tied players have to /roll again." },
-	{ key = "minQuality", officer = true, kind = "dropdown", name = "Loot Quality",
-		choices = { { 2, "Uncommon" }, { 3, "Rare" }, { 4, "Epic" }, { 5, "Legendary" } },
-		tooltip = "The lowest item quality listed from the loot window for rolling." },
-	{ key = "autoAward", officer = true, kind = "checkbox", name = "Award Automatically",
-		tooltip = "As the writer, award each roll as soon as it's decided, without clicking Award." },
-	{ section = "Rolling" },
-	{ key = "autoRoll", kind = "dropdown", name = "Auto-roll",
-		choices = { { ns.AUTO_ROLL.OFF, "Off" }, { ns.AUTO_ROLL.REROLLS, "Rerolls only" }, { ns.AUTO_ROLL.ALL, "Every roll" } },
-		tooltip = "Roll for you. Rerolls only: when you're tied, roll again straight away. Every roll: also roll a few seconds after any roll you can take part in starts, unless you pass first." },
-	{ section = "Window" },
-	{ key = "autoShow", kind = "checkbox", name = "Show When I Can Roll",
-		tooltip = "Open the window on the Roll tab whenever a roll starts that you can take part in." },
-	{ key = "autoShowLoot", kind = "checkbox", name = "Show New Loot",
-		tooltip = "Open the window on the Loot tab when a boss's loot is added." },
-	{ key = "hideUnrollable", kind = "checkbox", name = "Hide Loot I Can't Roll On",
-		tooltip = "Leave items your class can't use, and later drops of items you've won, off the Loot tab, and don't open the window for loot that's all like that. The copy you win stays. The writer always sees everything." },
-	{ key = "pityByBoss", kind = "checkbox", name = "Group My Pity by Boss",
-		tooltip = "On the My pity tab, group items by the boss that drops them, inside each raid." },
-	{ key = "hideWon", kind = "checkbox", name = "Hide Won Items",
-		tooltip = "Leave the items you've won off the My pity tab." },
-	{ key = "minimapButton", kind = "checkbox", name = "Minimap Button",
-		tooltip = "Show a button on the edge of the minimap: left-click opens the window, right-click its options, and drag it to move it. /pl opens the window either way." },
-	{ key = "showRaidTab", member = true, kind = "checkbox", name = "Show the Raid Tab",
-		tooltip = "Show the Raid tab, with every raider's role, to look at. Officers always have it." },
-	{ key = "tooltipHints", kind = "checkbox", name = "Show Click Hints in Tooltips",
-		tooltip = "End tooltips with the green lines saying what clicking does: on loot, rolls, the minimap button and the resize handle." },
-	{ section = "Profile" },
-	{ kind = "profile", name = "This Character", title = "Profile",
-		tooltip = "These options are kept in a profile. Every character starts on Default, sharing its options; pick or make another profile to give this character options of its own. The menu also copies, resets and deletes profiles." },
+	{ section = L.OPT_SECTION_ANNOUNCEMENTS, officer = true },
+	{ key = "announce", officer = true, kind = "checkbox", name = L.OPT_ANNOUNCE, tooltip = L.OPT_ANNOUNCE_TIP },
+	{ key = "whisperRefusals", officer = true, kind = "checkbox", name = L.OPT_WHISPER_REFUSALS, tooltip = L.OPT_WHISPER_REFUSALS_TIP },
+	{ key = "raidWarning", officer = true, kind = "checkbox", name = L.OPT_RAID_WARNING, tooltip = L.OPT_RAID_WARNING_TIP },
+	{ section = L.OPT_SECTION_RUNNING_ROLLS, officer = true },
+	{ key = "rollTime", officer = true, kind = "slider", name = L.OPT_ROLL_TIME, min = 10, max = 120, step = 5, format = Seconds,
+		tooltip = L.OPT_ROLL_TIME_TIP },
+	{ key = "rerollTime", officer = true, kind = "slider", name = L.OPT_REROLL_TIME, min = 10, max = 60, step = 5, format = Seconds,
+		tooltip = L.OPT_REROLL_TIME_TIP },
+	{ key = "minQuality", officer = true, kind = "dropdown", name = L.OPT_LOOT_QUALITY,
+		choices = { { 2, L.OPT_QUALITY_UNCOMMON }, { 3, L.OPT_QUALITY_RARE }, { 4, L.OPT_QUALITY_EPIC }, { 5, L.OPT_QUALITY_LEGENDARY } },
+		tooltip = L.OPT_LOOT_QUALITY_TIP },
+	{ key = "autoAward", officer = true, kind = "checkbox", name = L.OPT_AUTO_AWARD, tooltip = L.OPT_AUTO_AWARD_TIP },
+	{ section = L.OPT_SECTION_ROLLING },
+	{ key = "autoRoll", kind = "dropdown", name = L.OPT_AUTO_ROLL,
+		choices = {
+			{ ns.AUTO_ROLL.OFF, L.OPT_AUTO_ROLL_OFF }, { ns.AUTO_ROLL.REROLLS, L.OPT_AUTO_ROLL_REROLLS },
+			{ ns.AUTO_ROLL.ALL, L.OPT_AUTO_ROLL_ALL },
+		},
+		tooltip = L.OPT_AUTO_ROLL_TIP },
+	{ section = L.OPT_SECTION_WINDOW },
+	{ key = "autoShow", kind = "checkbox", name = L.OPT_AUTO_SHOW, tooltip = L.OPT_AUTO_SHOW_TIP },
+	{ key = "autoShowLoot", kind = "checkbox", name = L.OPT_AUTO_SHOW_LOOT, tooltip = L.OPT_AUTO_SHOW_LOOT_TIP },
+	{ key = "hideUnrollable", kind = "checkbox", name = L.OPT_HIDE_UNROLLABLE, tooltip = L.OPT_HIDE_UNROLLABLE_TIP },
+	{ key = "pityByBoss", kind = "checkbox", name = L.OPT_PITY_BY_BOSS, tooltip = L.OPT_PITY_BY_BOSS_TIP },
+	{ key = "hideWon", kind = "checkbox", name = L.OPT_HIDE_WON, tooltip = L.OPT_HIDE_WON_TIP },
+	{ key = "minimapButton", kind = "checkbox", name = L.OPT_MINIMAP_BUTTON, tooltip = L.OPT_MINIMAP_BUTTON_TIP },
+	{ key = "showRaidTab", member = true, kind = "checkbox", name = L.OPT_SHOW_RAID_TAB, tooltip = L.OPT_SHOW_RAID_TAB_TIP },
+	{ key = "tooltipHints", kind = "checkbox", name = L.OPT_TOOLTIP_HINTS, tooltip = L.OPT_TOOLTIP_HINTS_TIP },
+	{ section = L.OPT_SECTION_PROFILE },
+	{ kind = "profile", name = L.OPT_PROFILE, title = L.OPT_PROFILE_TITLE, tooltip = L.OPT_PROFILE_TIP },
 }
 
 -- A green line saying what clicking does, unless the player has hidden them.
@@ -85,7 +78,7 @@ function ns.NewProfile(name)
 	name = (name or ""):match("^%s*(.-)%s*$")
 	if name == "" then return end
 	for _, existing in ipairs(ns.Profiles()) do
-		if existing == name then return ns.Print(("There's already a profile called %s."):format(name)) end
+		if existing == name then return ns.Print(L.PROFILE_EXISTS:format(name)) end
 	end
 	ns.database:SetProfile(name)
 end
@@ -95,7 +88,7 @@ local function Confirm(text, accept)
 	return { text = text, button1 = YES, button2 = NO, OnAccept = accept, timeout = 0, whileDead = 1, hideOnEscape = 1 }
 end
 StaticPopupDialogs.PITIFULLOOT_NEW_PROFILE = {
-	text = "Name the new profile. It starts with the default options.",
+	text = L.PROFILE_NEW_DIALOG,
 	button1 = ACCEPT, button2 = CANCEL,
 	hasEditBox = 1, maxLetters = 32,
 	OnShow = function(dialog) dialog:GetEditBox():SetFocus() end,
@@ -107,11 +100,11 @@ StaticPopupDialogs.PITIFULLOOT_NEW_PROFILE = {
 	EditBoxOnEscapePressed = function(editBox) editBox:GetParent():Hide() end,
 	timeout = 0, whileDead = 1, hideOnEscape = 1,
 }
-StaticPopupDialogs.PITIFULLOOT_COPY_PROFILE = Confirm("Copy the options from %s into %s?",
+StaticPopupDialogs.PITIFULLOOT_COPY_PROFILE = Confirm(L.PROFILE_COPY_DIALOG,
 	function(_, from) ns.database:CopyProfile(from) end)
-StaticPopupDialogs.PITIFULLOOT_RESET_PROFILE = Confirm("Reset every option in %s to its default?",
+StaticPopupDialogs.PITIFULLOOT_RESET_PROFILE = Confirm(L.PROFILE_RESET_DIALOG,
 	function() ns.database:ResetProfile() end)
-StaticPopupDialogs.PITIFULLOOT_DELETE_PROFILE = Confirm("Delete the profile %s?",
+StaticPopupDialogs.PITIFULLOOT_DELETE_PROFILE = Confirm(L.PROFILE_DELETE_DIALOG,
 	function(_, name) ns.database:DeleteProfile(name) end)
 
 function ns.OpenOptions()

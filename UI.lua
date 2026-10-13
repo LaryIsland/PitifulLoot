@@ -1,4 +1,5 @@
 local _, ns = ...
+local L = ns.L
 
 -- The window, made from Forever's own templates and art so it sits alongside the game's panels: a portrait frame
 -- with side tabs like the group finder, a stone header and list rows like its Who list, and the timer bar and
@@ -14,31 +15,30 @@ local COLUMN_WIDTHS = { 66, 54, 84 }
 local COLUMN_OFFSETS = { 0, 66, 120 }
 local ROW_WIDTH = WIDTH - 38 -- the list's width, inside its margins and scroll bar
 local MIN_HEIGHT, MAX_HEIGHT = 400, 900
-local ROLL_LOCK = 3 -- rerolls in a row after which the header calls the players roll-locked
 local BACKGROUND_FOCUS = 0.6 -- how far across the background art its crop centres
 local ADDON_ICON = "Interface\\Icons\\INV_Misc_Dice_02"
 local VIEWS = {
-	{ key = "session", label = "Roll", icon = "Interface\\Icons\\INV_Misc_Dice_02" },
-	{ key = "pity", label = "My pity", icon = "Interface\\Icons\\INV_Misc_PocketWatch_01" },
-	{ key = "loot", label = "Loot", icon = "Interface\\Icons\\INV_Box_02" }, -- only there once loot has been seen
-	{ key = "raid", label = "Raid", icon = "Interface\\Icons\\Achievement_GuildPerk_EverybodysFriend" }, -- see ns.ShowsRaidTab
-	{ key = "options", label = "Options", icon = "Interface\\Icons\\INV_Misc_Gear_01" }, -- always at the bottom
+	{ key = "session", label = L.TAB_ROLL, icon = "Interface\\Icons\\INV_Misc_Dice_02" },
+	{ key = "pity", label = L.TAB_PITY, icon = "Interface\\Icons\\INV_Misc_PocketWatch_01" },
+	{ key = "loot", label = L.TAB_LOOT, icon = "Interface\\Icons\\INV_Box_02" }, -- only there once loot has been seen
+	{ key = "raid", label = L.TAB_RAID, icon = "Interface\\Icons\\Achievement_GuildPerk_EverybodysFriend" }, -- see ns.ShowsRaidTab
+	{ key = "options", label = L.TAB_OPTIONS, icon = "Interface\\Icons\\INV_Misc_Gear_01" }, -- always at the bottom
 }
 local EMPTY = {
-	session = "No roll in progress.",
-	pity = "You haven't built up pity on anything yet.",
-	loot = "Loot a boss as master looter to list its items here.",
+	session = L.EMPTY_SESSION,
+	pity = L.EMPTY_PITY,
+	loot = L.EMPTY_LOOT,
 	options = "",
-	raid = "Join a group to see its roles.",
+	raid = L.EMPTY_RAID,
 }
 local STATES = {
-	open = "Rolling", reroll = "Reroll", decided = "Decided", cancelled = "Cancelled", awarded = "Awarded",
-	disenchanted = "Disenchanted", kept = "Kept to sell",
+	open = L.STATE_OPEN, reroll = L.STATE_REROLL, decided = L.STATE_DECIDED, cancelled = L.STATE_CANCELLED,
+	awarded = L.STATE_AWARDED, disenchanted = L.STATE_DISENCHANTED, kept = L.STATE_KEPT,
 }
 local GREY = { r = 0.486, g = 0.518, b = 0.541 } -- FRIENDS_GRAY_COLOR, which the Who list uses for its details
 local HEADER_HEIGHT = 26
-local OTHER_RAID = "Other" -- items with no recorded raid, such as ones set by hand
-local OTHER_BOSS = "Unknown boss"
+local OTHER_RAID = L.PITY_OTHER_RAID -- items with no recorded raid, such as ones set by hand
+local OTHER_BOSS = L.PITY_UNKNOWN_BOSS
 local WARNINGS_SHOWN = 5
 local TRADES = "trades" -- the Loot tab's group of won items awaiting trade
 local TRADE_WARNING = 30 * 60 -- seconds left to trade an item below which its time shows in red
@@ -95,6 +95,51 @@ end
 
 -- Lines for each view. `cells` are the bare values; the rest is how a row shows them.
 
+-- Why you can't take part in a roll (ns.WhyCantRoll), on your row and in its tooltip.
+local CANT_ROLL = {
+	nottied = { L.CANT_ROLL_NOT_TIED, L.CANT_ROLL_NOT_TIED_TIP },
+	won = { L.CANT_ROLL_WON, L.CANT_ROLL_WON_TIP },
+	class = { L.CANT_ROLL_CLASS, L.CANT_ROLL_CLASS_TIP },
+}
+
+-- A /roll of yours the writer didn't count, on your own row the same way, saying why: in place of its details when
+-- no roll of yours counts (after a wrong range you can still roll, so the row still rolls), or in its tooltip when
+-- one does.
+local function ShowRefusal(out)
+	local refusal = ns.MyRefusal()
+	if not refusal then return end
+	local me = UnitGUID("player")
+	local reason = refusal.why == "range" and L.WHY_RANGE:format(refusal.low or 0, refusal.high or 0)
+		or L["WHY_" .. refusal.why:upper()]
+	local sentence = L.REFUSED:format(refusal.roll, reason)
+	local line
+	for _, each in ipairs(out) do
+		if each.mine then
+			line = each
+			break
+		end
+	end
+	if line and line.counted then
+		line.tip[#line.tip + 1] = sentence
+		return
+	end
+	if not line then
+		line = {
+			mine = true,
+			cells = { name = ns.NameOf(me), pity = "", spec = "", roll = "-", total = "", odds = "" },
+			title = ns.ColoredName(me),
+			faded = true,
+		}
+		table.insert(out, 1, line)
+	end
+	line.columns, line.detail = nil, L.REFUSED_DETAIL:format(reason)
+	if line.prompt then
+		line.tip = { L.ROLL_TIP_TITLE, sentence, refusal.why == "range" and L.REFUSED_RANGE_HINT or nil }
+	else
+		line.tip = { ns.ColoredName(me), sentence }
+	end
+end
+
 local function SessionLines()
 	local m = ns.live.mirror
 	local out = {}
@@ -105,40 +150,40 @@ local function SessionLines()
 		local spec = ""
 		if row.roll then spec = row.offSpec and "off" or (row.unknownRole and "?" or "main") end
 		local columns = {
-			row.roll and (row.round > 1 and "Rerolled %d" or "Rolled %d"):format(row.roll) or "",
-			row.pity and row.pity > 0 and ("Pity +" .. row.pity) or "",
+			row.roll and (row.round > 1 and L.ROW_REROLLED or L.ROW_ROLLED):format(row.roll) or "",
+			row.pity and row.pity > 0 and L.ROW_PITY:format(row.pity) or "",
 			-- A penalty from a fallback role, while theirs is unknown, has a question mark.
-			row.offSpec and ("Off-spec %d%s"):format(ns.OFFSPEC_MODIFIER, row.unknownRole and "?" or "")
-				or (row.unknownRole and "Role unknown") or "",
+			row.offSpec and (row.unknownRole and L.ROW_OFFSPEC_GUESSED or L.ROW_OFFSPEC):format(ns.OFFSPEC_MODIFIER)
+				or (row.unknownRole and L.ROW_ROLE_UNKNOWN) or "",
 		}
 		-- The roll and what went into it; the total is the number being hovered.
-		local waiting = m.state == "reroll" and row.contender and "Hasn't rerolled" or "Hasn't rolled"
-		local summary = { row.roll and tostring(row.roll) or (row.passed and "Passed") or waiting }
+		local waiting = m.state == "reroll" and row.contender and L.ROW_NOT_REROLLED or L.ROW_NOT_ROLLED
+		local summary = { row.roll and tostring(row.roll) or (row.passed and L.ROW_PASSED) or waiting }
 		if row.roll and row.pity and row.pity > 0 then summary[#summary + 1] = "+" .. row.pity end
-		if row.roll and row.offSpec then summary[#summary + 1] = ("%d (off-spec)"):format(ns.OFFSPEC_MODIFIER) end
+		if row.roll and row.offSpec then summary[#summary + 1] = L.ROW_TIP_OFFSPEC:format(ns.OFFSPEC_MODIFIER) end
 		local tip = { ns.ColoredName(id, row.name), table.concat(summary, " ") }
-		if row.stale then tip = { tip[1], "Before the tie: " .. tip[2], waiting } end
+		if row.stale then tip = { tip[1], L.ROW_TIP_BEFORE_TIE:format(tip[2]), waiting } end
 		if canFlip and row.roll then
-			tip[3] = "Click to count this roll as " .. (row.offSpec and "main-spec." or "off-spec.")
+			tip[3] = row.offSpec and L.HINT_COUNT_MAIN or L.HINT_COUNT_OFF
 		end
 		local click = canFlip and row.roll and function() ns.ToggleOffSpec(id) end or nil
 		local mine = id == UnitGUID("player")
 		local prompt
 		if row.prompt then
-			tip = { "Roll", "Does a /roll 1-100 for you. Everyone in the group sees it." }
+			tip = { L.ROLL_TIP_TITLE, L.ROLL_TIP }
 			click = ns.Roll
-			prompt = m.state == "reroll" and "Click to reroll" or "Click to roll"
-			if row.autoRollAt then prompt = ("Auto-roll in %ds"):format(math.max(math.ceil(row.autoRollAt - GetTime()), 1)) end
+			prompt = m.state == "reroll" and L.PROMPT_REROLL or L.PROMPT_ROLL
+			if row.autoRollAt then prompt = L.PROMPT_AUTO_ROLL:format(math.max(math.ceil(row.autoRollAt - GetTime()), 1)) end
 		elseif mine and row.passed then
-			tip[2] = "You passed. A /roll still counts if you change your mind."
+			tip[2] = L.ROW_TIP_PASSED
 		end
 		-- Your chance of winning goes under the roll (until you've rolled, there's no roll above it). A roll from before
 		-- a tie stays until its player rerolls, greyed out.
 		local note = ""
 		if row.passed then
-			note = "Passed"
+			note = L.ROW_PASSED
 		elseif row.odds then
-			note = Percent(row.odds) .. " chance"
+			note = L.ROW_CHANCE:format(Percent(row.odds))
 		elseif (not row.roll or row.stale) and not (row.prompt or row.rolling) then
 			note = waiting
 		end
@@ -161,10 +206,10 @@ local function SessionLines()
 			note = note,
 			prompt = prompt,
 			pass = row.prompt and ns.Pass or nil,
-			passTip = m.state == "reroll" and "You won't reroll, so you lose the tie. You still gain pity for your first roll."
-				or "You won't roll for this item. Typing /roll still counts if you change your mind.",
+			passTip = m.state == "reroll" and L.PASS_TIP_REROLL or L.PASS_TIP_ROLL,
 			winner = row.winner,
 			contender = row.contender,
+			counted = mine and row.roll ~= nil and not row.stale or nil, -- your own row, with a roll that counts
 			faded = ((not row.roll or row.stale) and not (row.prompt or row.rolling)) or row.passed,
 			tip = tip,
 			click = click,
@@ -182,11 +227,12 @@ local function SessionLines()
 			mine = true,
 			cells = { name = ns.NameOf(me), pity = "", spec = "", roll = "-", total = "", odds = "" },
 			title = ns.ColoredName(me),
-			detail = why,
+			detail = CANT_ROLL[why][1],
 			faded = true,
-			tip = { ns.ColoredName(me), "You can't roll on this: " .. why:gsub("^%u", string.lower) .. "." },
+			tip = { ns.ColoredName(me), CANT_ROLL[why][2] },
 		})
 	end
+	ShowRefusal(out)
 	return out
 end
 
@@ -196,10 +242,10 @@ local lootCollapsed = {}
 
 -- "1h 42m", "28m", or "Expired".
 local function TimeLeft(seconds)
-	if seconds <= 0 then return "Expired" end
+	if seconds <= 0 then return L.TRADE_EXPIRED end
 	local minutes = math.ceil(seconds / 60)
-	if minutes < 60 then return minutes .. "m" end
-	return ("%dh %02dm"):format(math.floor(minutes / 60), minutes % 60)
+	if minutes < 60 then return L.TIME_MINUTES:format(minutes) end
+	return L.TIME_HOURS:format(math.floor(minutes / 60), minutes % 60)
 end
 
 -- Won items not yet handed over, one row per copy, at the top of the Loot tab: all of them for officers, and your
@@ -213,14 +259,14 @@ local function TradeLines(out)
 		if officer or pending.id == me then
 			local left = pending.expires - now
 			local detail = {}
-			if pending.id ~= me then detail[#detail + 1] = "For " .. ns.ColoredName(pending.id) end
-			if pending.from and not ns.IsMe(pending.from) then detail[#detail + 1] = "From " .. ns.ColoredName(pending.from) end
+			if pending.id ~= me then detail[#detail + 1] = L.TRADE_FOR:format(ns.ColoredName(pending.id)) end
+			if pending.from and not ns.IsMe(pending.from) then detail[#detail + 1] = L.TRADE_FROM:format(ns.ColoredName(pending.from)) end
 			local click, hints
 			if officer then
 				local canTrade = left > 0 and pending.id ~= me and ns.HoldsItem(pending.item)
 				hints = {}
-				if canTrade then hints[1] = "Left-click to trade it to " .. ns.ColoredName(pending.id) .. "." end
-				hints[#hints + 1] = left > 0 and "Right-click if it's been handed over." or "Right-click to clear it."
+				if canTrade then hints[1] = L.HINT_TRADE:format(ns.ColoredName(pending.id)) end
+				hints[#hints + 1] = left > 0 and L.HINT_TRADE_DONE or L.HINT_TRADE_CLEAR
 				click = function(button)
 					if button == "RightButton" then
 						ns.MarkTraded(pending.sid, pending.id)
@@ -236,7 +282,7 @@ local function TradeLines(out)
 				detail = table.concat(detail, "  ·  "),
 				value = TimeLeft(left),
 				valueColor = left < TRADE_WARNING and RED_FONT_COLOR or nil,
-				note = left > 0 and "to trade" or nil,
+				note = left > 0 and L.TRADE_NOTE or nil,
 				mine = pending.id == me,
 				item = pending.item,
 				click = click,
@@ -246,7 +292,7 @@ local function TradeLines(out)
 	end
 	if not rows[1] then return end
 	out[#out + 1] = {
-		header = 1, key = TRADES, collapsed = lootCollapsed[TRADES], text = ("Awaiting trade (%d)"):format(#rows),
+		header = 1, key = TRADES, collapsed = lootCollapsed[TRADES], text = L.TRADE_HEADER:format(#rows),
 		toggle = function() lootCollapsed[TRADES] = not lootCollapsed[TRADES] or nil end,
 	}
 	if lootCollapsed[TRADES] then return end
@@ -280,8 +326,8 @@ end
 local function ShowItemMenu(owner, item, greedRoll)
 	MenuUtil.CreateContextMenu(owner, function(_, root)
 		root:CreateTitle(C_Item.GetItemInfo(item) or ns.ItemLink(item))
-		if greedRoll then root:CreateButton("Start a greed roll", greedRoll) end
-		root:CreateTitle("Roles")
+		if greedRoll then root:CreateButton(L.MENU_GREED_ROLL, greedRoll) end
+		root:CreateTitle(L.MENU_ROLES)
 		for _, role in ipairs(ns.ROLE_ORDER) do
 			local function Suits()
 				local suits = ns.ItemRoles(item)
@@ -332,7 +378,7 @@ local function LootLines()
 		if items[1] then
 			out[#out + 1] = {
 				header = 1, key = key, collapsed = lootCollapsed[key],
-				text = ("%s (%d)"):format(group.boss or ("Loot " .. index), #items),
+				text = ("%s (%d)"):format(group.boss or L.LOOT_GROUP:format(index), #items),
 				toggle = function() lootCollapsed[key] = not lootCollapsed[key] or nil end,
 			}
 		end
@@ -341,25 +387,28 @@ local function LootLines()
 			local done = ns.LootDone(entry)
 			local detail = {}
 			-- Once it's won, the winners show how many there were.
-			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = entry.copies .. " copies" end
-			if entry.boe then detail[#detail + 1] = "Binds on Equip" end
+			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = L.LOOT_COPIES:format(entry.copies) end
+			if entry.boe then detail[#detail + 1] = L.LOOT_BOE end
 			-- The icons of the roles it's for, unless it's for any of them, start the details.
 			local suits = not done and ns.ItemRoles(item)
 			local status
 			if entry.status == "rolling" then
-				status = Colored("Rolling now", NORMAL_FONT_COLOR)
+				status = Colored(L.LOOT_ROLLING, NORMAL_FONT_COLOR)
 			elseif entry.status == "decided" then
-				status = "Won by " .. NameList(entry.pending or {})
+				status = L.LOOT_WON_BY:format(NameList(entry.pending or {}))
 			elseif entry.status == "disenchanted" or entry.status == "kept" then
-				local fate = entry.status == "kept" and "kept to sell" or "disenchanted"
-				status = entry.winners[1] and ("Awarded to %s, the rest %s"):format(NameList(entry.winners), fate)
-					or (fate:gsub("^%l", string.upper))
+				local kept = entry.status == "kept"
+				if entry.winners[1] then
+					status = (kept and L.LOOT_AWARDED_REST_KEPT or L.LOOT_AWARDED_REST_DISENCHANTED):format(NameList(entry.winners))
+				else
+					status = kept and L.STATE_KEPT or L.STATE_DISENCHANTED
+				end
 			elseif done then
-				status = "Awarded to " .. NameList(entry.winners)
+				status = L.LOOT_AWARDED_TO:format(NameList(entry.winners))
 			elseif entry.winners[1] then
-				status = ("%d of %d awarded: %s"):format(#entry.winners, entry.copies, NameList(entry.winners))
+				status = L.LOOT_PART_AWARDED:format(#entry.winners, entry.copies, NameList(entry.winners))
 			elseif entry.status == "none" then
-				status = "No one rolled"
+				status = L.LOOT_NO_ONE_ROLLED
 			end
 			if status then detail[#detail + 1] = status end
 			-- The writer starts rolls with a left-click; a right-click is a BoE's greed roll, and for officers, a menu
@@ -371,13 +420,13 @@ local function LootLines()
 			local setRoles = AsOfficer() and not ns.ForEveryone(item)
 			if canRoll or greed or setRoles then
 				hints = {}
-				if canRoll then hints[#hints + 1] = "Left-click to start a roll." end
+				if canRoll then hints[#hints + 1] = L.HINT_START_ROLL end
 				if greed and setRoles then
-					hints[#hints + 1] = "Right-click for a greed roll, or to set its roles."
+					hints[#hints + 1] = L.HINT_GREED_OR_ROLES
 				elseif greed then
-					hints[#hints + 1] = "Right-click to start a greed roll."
+					hints[#hints + 1] = L.HINT_GREED
 				elseif setRoles then
-					hints[#hints + 1] = "Right-click to set its roles."
+					hints[#hints + 1] = L.HINT_SET_ROLES
 				end
 				click = function(button, owner)
 					if button == "LeftButton" and canRoll then
@@ -394,9 +443,9 @@ local function LootLines()
 			local pity = state and state:GetPity(me, item, false, GetServerTime()) or 0
 			local value, note = "", nil
 			if won then
-				note = "You've won this"
+				note = L.LOOT_WON_NOTE
 			elseif pity > 0 then
-				value, note = "+" .. pity, "Your pity"
+				value, note = "+" .. pity, L.LOOT_PITY_NOTE
 			end
 			local name = C_Item.GetItemInfo(item)
 			out[#out + 1] = {
@@ -461,7 +510,7 @@ local function PityLines()
 	local now = GetServerTime()
 	local byBoss = ns.settings.pityByBoss
 	local raids = {}
-	local function Add(item, pity, note)
+	local function Add(item, pity, note, won)
 		local source = state.sources[item]
 		local raid = source and source.instance or OTHER_RAID
 		local boss = byBoss and (source and source.boss or OTHER_BOSS) or ""
@@ -475,9 +524,9 @@ local function PityLines()
 			title = ns.ItemLink(item),
 			detail = note,
 			value = pity and ("+" .. pity) or "",
-			note = chance and ("%d%% vs 0 pity"):format(chance * 100 + 0.5) or nil,
+			note = chance and L.PITY_ODDS:format(chance * 100 + 0.5) or nil,
 			sort = pity or -1,
-			winner = note == "Won",
+			winner = won,
 			item = item,
 		})
 	end
@@ -485,11 +534,11 @@ local function PityLines()
 	for _, greed in ipairs({ false, true }) do
 		for item in pairs((greed and state.greed or state.pity)[me] or {}) do
 			local pity = state:GetPity(me, item, greed, now)
-			if pity > 0 then Add(item, pity, greed and "Greed" or "Need") end
+			if pity > 0 then Add(item, pity, greed and L.PITY_GREED or L.PITY_NEED) end
 		end
 	end
 	if not ns.settings.hideWon then
-		for item in pairs(state.won[me] or {}) do Add(item, nil, "Won") end
+		for item in pairs(state.won[me] or {}) do Add(item, nil, L.PITY_WON, true) end
 	end
 
 	if focusRaid then FocusRaid(raids) end
@@ -754,16 +803,15 @@ end
 
 local function RoundText(m)
 	local text = STATES[m.state] or m.state
-	if m.state == "open" and ns.CanRoll() then text = "Roll now" end
+	if m.state == "open" and ns.CanRoll() then text = L.ROUND_ROLL_NOW end
 	if m.state == "reroll" then
 		local rerolls = m.round - 1
-		text = rerolls > ROLL_LOCK and ("Roll-locked! Reroll %d"):format(rerolls)
-			or rerolls > 1 and ("Reroll %d"):format(rerolls) or "Reroll"
-		if (m.slots or 1) > 1 then text = ("%s for %d"):format(text, m.slots) end
+		text = rerolls > 1 and L.ROUND_REROLL_N:format(rerolls) or L.STATE_REROLL
+		if (m.slots or 1) > 1 then text = L.ROUND_FOR_SLOTS:format(text, m.slots) end
 	end
-	if m.state == "decided" and not m.winners[1] then text = "No rolls" end
-	if m.state == "awarded" and m.rev then text = ("Awarded (revision %d)"):format(m.rev) end
-	if m.ends then text = ("%s: %ds left"):format(text, math.max(math.ceil(m.ends - GetTime()), 0)) end
+	if m.state == "decided" and not m.winners[1] then text = L.ROUND_NO_ROLLS end
+	if m.state == "awarded" and m.rev then text = L.ROUND_AWARDED:format(m.rev) end
+	if m.ends then text = L.ROUND_TIME_LEFT:format(text, math.max(math.ceil(m.ends - GetTime()), 0)) end
 	-- Where it dropped, when known.
 	local source = m.boss and (m.instance .. " - " .. m.boss) or m.instance
 	if source then text = Colored(source, GREY) .. "  ·  " .. text end
@@ -787,28 +835,36 @@ local function UpdateHeader()
 		frame:SetPortraitToAsset(ItemIcon(m.item) or ADDON_ICON)
 		local text = ns.ItemLink(m.item)
 		if m.copies > 1 then text = text .. Colored(" x" .. m.copies, HIGHLIGHT_FONT_COLOR) end
-		if m.greed then text = text .. Colored(" (greed)", HIGHLIGHT_FONT_COLOR) end
+		if m.greed then text = text .. Colored(L.HEADER_GREED, HIGHLIGHT_FONT_COLOR) end
 		frame.ItemName:SetText(text)
 		frame.RoundText:SetText(RoundText(m))
 	else
 		frame:SetPortraitToAsset(ADDON_ICON)
 		frame.ItemName:SetText("")
-		frame.RoundText:SetText(ns.live.writer and ("Waiting for " .. ns.ColoredName(ns.live.writer) .. " to start a roll.") or "")
+		frame.RoundText:SetText(ns.live.writer and L.HEADER_WAITING:format(ns.ColoredName(ns.live.writer)) or "")
 	end
 	UpdateTimer()
 end
 
--- The footer runs up to whichever buttons are showing: the ledger's revision over the writer, always on two lines so
--- they stay put. Test mode is in the title, out of its way.
+-- The footer runs up to whichever buttons are showing: the ledger's revision and the officer who recorded it (not
+-- while it's syncing, when it's moving), over the writer, always on two lines so they stay put. Test mode is in the
+-- title, out of its way.
 local function UpdateFooter()
 	local ledger
 	if ns.ledger then
-		ledger = ("Revision %d"):format((ns.ledger:Revision()))
-		if ns.SyncBusy() then ledger = ledger .. ", syncing" end
+		local rev = ns.ledger:Revision()
+		local head = ns.ledger.entries[rev]
+		if ns.SyncBusy() then
+			ledger = L.FOOTER_REVISION_SYNCING:format(rev)
+		elseif head and type(head.by) == "string" then
+			ledger = L.FOOTER_REVISION_BY:format(rev, ns.ColoredName(head.by))
+		else
+			ledger = L.FOOTER_REVISION:format(rev)
+		end
 	else
-		ledger = "No guild ledger"
+		ledger = L.FOOTER_NO_LEDGER
 	end
-	local writer = "Writer: " .. (ns.live.writer and ns.ColoredName(ns.live.writer) or "none")
+	local writer = ns.live.writer and L.WRITER:format(ns.ColoredName(ns.live.writer)) or L.WRITER_NONE
 	local status = frame.Status
 	local primary, cancel = frame.Primary:IsShown(), frame.Cancel:IsShown()
 	status:ClearAllPoints()
@@ -836,17 +892,17 @@ local function UpdateButtons()
 	local decided = m and m.state == "decided"
 	local label, action
 	if writer and active then
-		label, action = "Close round", ns.CloseRound
+		label, action = L.BUTTON_CLOSE_ROUND, ns.CloseRound
 	elseif writer and decided and m.winners[1] then
-		label, action = "Award", ns.Award
+		label, action = L.BUTTON_AWARD, ns.Award
 	elseif writer and decided and not m.greed and ns.IsBoE(m.item) then
-		label, action = "Greed roll", function() ns.StartRoll(m.item, m.copies, true) end
+		label, action = L.BUTTON_GREED_ROLL, function() ns.StartRoll(m.item, m.copies, true) end
 	elseif writer and decided and m.greed then
-		label, action = "Keep to sell", ns.KeepToSell
+		label, action = L.BUTTON_KEEP, ns.KeepToSell
 	elseif writer and decided and not ns.IsBoE(m.item) then
-		label, action = "Disenchant", ns.Disenchant
+		label, action = L.BUTTON_DISENCHANT, ns.Disenchant
 	elseif not writer and IsInGroup() and AsOfficer() then
-		label, action = "Be the writer", ns.ClaimWriter
+		label, action = L.BUTTON_BE_WRITER, ns.ClaimWriter
 	end
 	frame.Primary:SetShown(label ~= nil)
 	frame.Primary:SetText(label or "")
@@ -900,11 +956,11 @@ function ns.RefreshWindow()
 	if panel then panel:Refresh() end
 	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
 	local empty = EMPTY[view]
-	if view == "loot" and ns.loot.groups[1] then empty = "None of the loot is for you." end
+	if view == "loot" and ns.loot.groups[1] then empty = L.EMPTY_LOOT_HIDDEN end
 	if view == "raid" and (IsInGroup() or ns.IsTestMode()) then empty = "" end
 	local m = ns.live.mirror
 	if view == "session" and m then
-		empty = (m.state == "open" or m.state == "reroll") and "No one has rolled yet." or "No one rolled."
+		empty = (m.state == "open" or m.state == "reroll") and L.EMPTY_NOT_ROLLED_YET or L.EMPTY_NO_ONE_ROLLED
 	end
 	frame.Empty:SetText(lines[1] and "" or empty)
 	UpdateHeader()
@@ -1019,10 +1075,10 @@ local function CreateOptions(parent)
 					if name ~= current then others[#others + 1] = name end
 				end
 				root:CreateDivider()
-				root:CreateButton("New Profile", function() StaticPopup_Show("PITIFULLOOT_NEW_PROFILE") end)
-				local copy = others[1] and root:CreateButton("Copy From")
-				root:CreateButton("Reset to Defaults", function() StaticPopup_Show("PITIFULLOOT_RESET_PROFILE", current) end)
-				local delete = others[1] and root:CreateButton("Delete")
+				root:CreateButton(L.PROFILE_NEW, function() StaticPopup_Show("PITIFULLOOT_NEW_PROFILE") end)
+				local copy = others[1] and root:CreateButton(L.PROFILE_COPY)
+				root:CreateButton(L.PROFILE_RESET, function() StaticPopup_Show("PITIFULLOOT_RESET_PROFILE", current) end)
+				local delete = others[1] and root:CreateButton(L.PROFILE_DELETE)
 				for _, name in ipairs(others) do
 					copy:CreateButton(name, function() StaticPopup_Show("PITIFULLOOT_COPY_PROFILE", name, current, name) end)
 					delete:CreateButton(name, function() StaticPopup_Show("PITIFULLOOT_DELETE_PROFILE", name, nil, name) end)
@@ -1042,10 +1098,9 @@ local function CreateOptions(parent)
 	officer:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -20, 50)
 	officer.Text:ClearAllPoints()
 	officer.Text:SetPoint("RIGHT", officer, "LEFT", -2, 1)
-	officer.Text:SetText("Officer options")
+	officer.Text:SetText(L.OPT_OFFICER)
 	officer:SetScript("OnClick", function(self) ns.SetOption("showOfficerOptions", self:GetChecked() and true or false) end)
-	Tooltip(officer, { name = "Officer options",
-		tooltip = "Show the options for running rolls: announcements, roll times and which loot is listed." })
+	Tooltip(officer, { name = L.OPT_OFFICER, tooltip = L.OPT_OFFICER_TIP })
 	scroll.OfficerToggle = officer
 	scroll.Rows = rows
 
@@ -1119,7 +1174,7 @@ end
 -- the tooltip's background, so the line keeps its width.
 local function InspectingText()
 	local shown = math.floor(GetTime() / DOT_TIME) % 4
-	return "Inspecting their talents" .. ("."):rep(shown) .. Colored(("."):rep(3 - shown), HIDDEN_DOTS)
+	return L.RAID_INSPECTING .. ("."):rep(shown) .. Colored(("."):rep(3 - shown), HIDDEN_DOTS)
 end
 
 -- A raider's tooltip. Under their name, while their talents are being inspected, it says so, in light blue; or if
@@ -1147,10 +1202,10 @@ local function ShowRaiderTooltip(owner, member)
 		local fallback = ns.FallbackRole(member.class, ns.RoleReason(member.guid))
 		GameTooltip_AddHighlightLine(GameTooltip, QuestionMark(RaiderState(member)) .. " " .. ns.ROLE_NAMES[fallback])
 	end
-	GameTooltip_AddNormalLine(GameTooltip, ("Group %d"):format(member.subgroup or 1))
+	GameTooltip_AddNormalLine(GameTooltip, L.RAID_GROUP:format(member.subgroup or 1))
 	if ns.RoleChoices(member) and AsOfficer() then
-		ns.AddHint(GameTooltip, "Left-click to update role from talents")
-		ns.AddHint(GameTooltip, "Right-click to set their role.")
+		ns.AddHint(GameTooltip, L.HINT_INSPECT)
+		ns.AddHint(GameTooltip, L.HINT_SET_ROLE)
 	end
 	GameTooltip:Show()
 end
@@ -1170,7 +1225,7 @@ local function ShowRaiderMenu(row, member)
 		end
 		-- What Automatic would give, as its icon, or a question mark while that's unknown.
 		local auto = ns.AutoRole(member.guid)
-		root:CreateRadio("Automatic (" .. (auto and RoleIcon(auto) or QuestionMark("unchecked")) .. ")",
+		root:CreateRadio(L.RAID_AUTOMATIC:format(auto and RoleIcon(auto) or QuestionMark("unchecked")),
 			function() return not Set() end,
 			function() if Set() then ns.SetRole(member.guid, nil) end end)
 	end)
@@ -1262,9 +1317,8 @@ local function CreateRaid(parent)
 	inspect:SetScript("OnClick", function() ns.InspectUnknown() end)
 	inspect:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip_SetTitle(GameTooltip, "Inspect Unknown")
-		GameTooltip_AddNormalLine(GameTooltip,
-			"Inspect each raider whose role isn't known yet, one at a time, to read it from their talents. Raiders whose role is known aren't inspected again.", true)
+		GameTooltip_SetTitle(GameTooltip, L.RAID_INSPECT_UNKNOWN)
+		GameTooltip_AddNormalLine(GameTooltip, L.RAID_INSPECT_UNKNOWN_TIP, true)
 		GameTooltip:Show()
 	end)
 	inspect:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1305,7 +1359,7 @@ local function CreateRaid(parent)
 		summary:SetText(groups[1] and table.concat(parts, "   ") or "")
 		local officer = AsOfficer()
 		inspect:SetShown(officer and groups[1] ~= nil)
-		inspect:SetText(ns.IsSweeping() and "Inspecting..." or "Inspect Unknown")
+		inspect:SetText(ns.IsSweeping() and L.RAID_INSPECTING_BUTTON or L.RAID_INSPECT_UNKNOWN)
 		inspect:SetEnabled(not ns.IsSweeping() and ns.UnknownRaiders()[1] ~= nil)
 
 		local used, y = 0, -RAID_SUMMARY_HEIGHT
@@ -1507,7 +1561,7 @@ local function Create()
 	itemHit:SetScript("OnEnter", function(self)
 		local m = ns.live.mirror
 		if not m then return end
-		ShowTooltip(self, { item = m.item, hints = CanSetRoles(m) and { "Right-click to set its roles." } or nil })
+		ShowTooltip(self, { item = m.item, hints = CanSetRoles(m) and { L.HINT_SET_ROLES } or nil })
 	end)
 	itemHit:SetScript("OnClick", function(self)
 		local m = ns.live.mirror
@@ -1535,11 +1589,11 @@ local function Create()
 	alert:SetNormalTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
 	alert:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip_SetTitle(GameTooltip, "Something didn't match", RED_FONT_COLOR)
+		GameTooltip_SetTitle(GameTooltip, L.ALERT_TITLE, RED_FONT_COLOR)
 		for i = math.max(#ns.warnings - WARNINGS_SHOWN + 1, 1), #ns.warnings do
 			GameTooltip_AddNormalLine(GameTooltip, ns.warnings[i].text)
 		end
-		ns.AddHint(GameTooltip, "Click to dismiss.")
+		ns.AddHint(GameTooltip, L.HINT_DISMISS)
 		GameTooltip:Show()
 	end)
 	alert:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1602,9 +1656,9 @@ local function Create()
 	resize:SetScript("OnEnter", function(self)
 		if not ns.settings.tooltipHints then return end
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-		GameTooltip_SetTitle(GameTooltip, "Resize")
-		ns.AddHint(GameTooltip, "Drag to make the window taller or shorter.")
-		ns.AddHint(GameTooltip, "Right-click to reset its size.")
+		GameTooltip_SetTitle(GameTooltip, L.RESIZE_TITLE)
+		ns.AddHint(GameTooltip, L.HINT_RESIZE_DRAG)
+		ns.AddHint(GameTooltip, L.HINT_RESIZE_RESET)
 		GameTooltip:Show()
 	end)
 	resize:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1621,7 +1675,7 @@ local function Create()
 	frame.Cancel = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 	frame.Cancel:SetSize(CANCEL_WIDTH, 22)
 	frame.Cancel:SetPoint("BOTTOMRIGHT", -BUTTON_MARGIN, 12)
-	frame.Cancel:SetText("Cancel")
+	frame.Cancel:SetText(L.BUTTON_CANCEL)
 	frame.Cancel:SetScript("OnClick", function() ns.CancelRoll() end)
 	frame.Primary = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 	frame.Primary:SetSize(PRIMARY_WIDTH, 22)

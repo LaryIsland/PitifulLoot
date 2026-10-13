@@ -11,7 +11,7 @@ ns.LEAVER_DECAY_PERIOD = 7 * 24 * 60 * 60
 
 -- Main-spec and off-spec are by raid role (4.6): every Forever class has a single spec, so a spec says nothing.
 ns.ROLE_ORDER = { "TANK", "HEALER", "DAMAGER" }
-ns.ROLE_NAMES = { TANK = "Tank", HEALER = "Healer", DAMAGER = "Damage" }
+ns.ROLE_NAMES = { TANK = ns.L.ROLE_TANK, HEALER = ns.L.ROLE_HEALER, DAMAGER = ns.L.ROLE_DAMAGER }
 
 -- What a player adds to their roll on an item: their pity, less the off-spec penalty. Not floored (4.2).
 function ns.Bonus(pity, offSpec)

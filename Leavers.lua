@@ -41,8 +41,8 @@ local function Record(id, kind, noticed)
 	if not ns.ledger or Change(id) ~= kind then return end
 	local ok = ns.AppendEntry({ type = kind, id = id, time = noticed, by = ns.PlayerName() })
 	if ok then
-		ns.Print(("%s %s the guild; recorded as revision %d."):format(ns.NameOf(id), kind == "leave" and "left" or "rejoined",
-			(ns.ledger:Revision())))
+		local text = kind == "leave" and ns.L.MSG_LEFT_GUILD or ns.L.MSG_REJOINED_GUILD
+		ns.Print(text:format(ns.NameOf(id), (ns.ledger:Revision())))
 	end
 end
 
