@@ -154,8 +154,6 @@ L["HINT_TRADE_CLEAR"] = "Right-click to clear it."
 
 -- The My Pity tab --------------------------------------------------------------------------------------------------
 
-L["PITY_NEED"] = "Need"
-L["PITY_GREED"] = "Greed"
 L["PITY_WON"] = "Won"
 L["PITY_ODDS"] = "%d%% vs 0 pity" -- %% is a percent sign
 L["PITY_OTHER_RAID"] = "Other" -- items with no recorded raid, such as ones set by hand
@@ -177,6 +175,7 @@ L["HINT_SET_ROLE"] = "Right-click to set their role."
 -- Where a raider's role came from, when it isn't certain.
 L["ROLE_SOURCE_OFFICER"] = "Set by %s"
 L["ROLE_SOURCE_RAID"] = "Set in Blizzard's role menu"
+L["ROLE_SOURCE_KNOWN"] = "Last known role"
 -- Why a raider's role is unknown, in red under their name. \n starts a new line in the tooltip (it's a space in chat).
 L["REASON_FAR"] = "Too far away."
 L["REASON_NOREPLY"] = "Inspect got no response. Try again."
@@ -277,11 +276,12 @@ L["HELP_PASS"] = "/pl pass - pass on the roll in progress"
 L["HELP_OS"] = "/pl os <name> - flip a roll's off-spec flag before the first round closes"
 L["HELP_PITY"] = "/pl pity [name] - list pity"
 L["HELP_LEAVE"] = "/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild by hand (officers)"
-L["HELP_ADJUST"] = "/pl adjust <name> <item> <pity> [unlock] - correct pity, or lift a lockout (officers)"
+L["HELP_ADJUST"] = "/pl adjust <name> <item> <+/-pity|won> [unlock] - correct pity, record a win, or lift a lockout (officers)"
 L["HELP_RESYNC"] = "/pl resync <officer> - replace your ledger with an officer's"
 L["HELP_STATUS"] = "/pl status - ledger revision, writer and warnings"
+L["HELP_LOG"] = "/pl log [count] - the latest events in your full log, and your ledger checked against it"
 L["USAGE_ROLL"] = "/pl roll <item link or ID> [copies] [greed]"
-L["USAGE_ADJUST"] = "/pl adjust <name> <item> <pity> [unlock]"
+L["USAGE_ADJUST"] = "/pl adjust <name> <item> <+/-pity|won> [unlock]"
 
 -- Messages in your own chat window ---------------------------------------------------------------------------------
 
@@ -290,9 +290,11 @@ L["MSG_OFFICERS_ONLY"] = "Only officers can do that."
 L["MSG_PLAYER_NOT_FOUND"] = "Can't find %s in your raid or guild."
 L["MSG_RECORDED"] = "Recorded as revision %d."
 L["MSG_NOT_RECORDED"] = "Not recorded: %s." -- a reason from the ledger, below
-L["MSG_PITY_GREED"] = "%s +%d (greed)"
 L["MSG_PITY_WON"] = "%s won"
 L["MSG_PITY_NONE"] = "%s has no pity yet."
+L["MSG_PITY_STEPS"] = "Pity changes go in steps of 10, from -50 to +50."
+L["MSG_ADJUST_ALREADY_WON"] = "%s has already won %s."
+L["MSG_ADJUST_WON"] = "%s has won %s; add unlock to give them pity on it again."
 L["MSG_STATUS"] = "%s ledger: revision %d (%s)."
 L["MSG_STATUS_SYNCING"] = "%s ledger: revision %d (%s), syncing."
 L["MSG_STATUS_NO_LEDGER"] = "No guild ledger loaded."
@@ -324,49 +326,55 @@ L["MSG_NOT_OFFICER"] = "%s isn't an officer in your guild."
 L["MSG_FETCHING"] = "Fetching the ledger from %s."
 L["MSG_SYNCED"] = "Your ledger now matches %s's (revision %d)."
 
+-- The full log (/pl log): one line per event, after its date.
+L["LOG_EMPTY"] = "Your full log is empty."
+L["LOG_HEADER"] = "Your full log (the latest %d of %d events):"
+L["LOG_NOBODY"] = "nobody"
+L["LOG_ROLL"] = "%s: won by %s, lost by %s (%s's roll)" -- item, winners, losers, the writer
+L["LOG_GREED"] = "%s: won on greed by %s (%s's roll)"
+L["LOG_RESULT"] = "%s: won by %s, lost by %s (recorded by %s, in a raid you weren't in)"
+L["LOG_ADJUST"] = "%s's pity on %s: %s (by %s)" -- player, item, the change (+20), the officer
+L["LOG_WON"] = "%s recorded as having won %s (by %s)" -- player, item, the officer
+L["LOG_UNLOCK"] = "%s's lockout on %s lifted, then %s (by %s)"
+L["LOG_LEAVE"] = "%s left the guild (recorded by %s)"
+L["LOG_REJOIN"] = "%s rejoined the guild (recorded by %s)"
+L["LOG_ITEMROLES"] = "%s's roles set by %s"
+L["LOG_ROLE"] = "%s's last known role: %s (by %s)"
+L["LOG_ROLE_UNKNOWN"] = "unknown"
+L["LOG_MERGE"] = "%s merged %d changes (revision %d)"
+L["LOG_BASE"] = "Took %s's table (revision %d)"
+L["LOG_ROW"] = "%s sent your pity: %s" -- the officer, then items and their pity
+L["LOG_WONBEFORE"] = "%s reported that %s had already won %s"
+L["LOG_DOUBLEWIN"] = "%s won %s twice"
+-- Checking the ledger against the log, after the events.
+L["LOG_CHECK_SINCE"] = "Checking from %s, when you last took another officer's table."
+L["LOG_CHECK_NONE"] = "Nothing in your log to check your ledger against yet."
+L["LOG_CHECK_OK"] = "Your ledger matches your log (%d items checked)."
+L["LOG_CHECK_BAD"] = "%s, %s: your ledger has %s, but your log says %s (as of %s)." -- player, item, ledger, log, date
+L["LOG_CHECK_RESYNC"] = "Checking %s's table against your log, for anything your old table had that this one doesn't:"
+L["LOG_CHECK_RESYNC_HINT"] = "If your log is right, /pl adjust puts it back: +/- pity, or won for a win."
+L["LOG_CHECK_HINT"] = "A difference can be a change your log never saw, from a raid you weren't in or one that hasn't reached you yet."
+
 -- Warnings: in red in chat, and in the warning sign's tooltip. -----------------------------------------------------
 
-L["WARN_LEDGER_LOAD"] = "Your saved ledger couldn't be fully loaded (%s). /pl resync <officer> fetches theirs."
 L["WARN_DIVERGED"] = "Your ledger differs from %s's at revision %d. If theirs is right, /pl resync %s replaces yours."
-L["WARN_REFUSED"] = "Revision %s from %s was refused: %s." -- a reason from the ledger, below
 L["WARN_AWARD_FAILED"] = "The award couldn't be recorded: %s."
 L["WARN_UNSEEN_ROLL"] = "%s: the writer counted a roll of %d that you didn't see."
 L["WARN_DIFFERENT_ROLL"] = "%s: the writer counted a roll of %d, but you saw %d."
 L["WARN_UNCOUNTED"] = "%s rolled %d, but the writer didn't count it."
 L["WARN_PITY"] = "%s: the writer used pity %d, but your ledger (revision %d) says %d."
 L["WARN_WINNERS"] = "The winners the writer announced don't match the rolls."
+L["WARN_DOUBLE_WIN"] = "%s won %s again in %s's roll, after already winning it in another raid. Either their game missed that award (no addon, or it closed before saving), or their addon was tampered with."
+L["WARN_WON_BEFORE"] = "%s reported that %s had already won %s before %s's roll gave it to them. Not proven: a reporter's addon could have been tampered with, though several reports make it likelier."
+L["WARN_WON_BEFORE_SEEN"] = "First report: %s's roll on %s." -- the officer who ran the earlier roll, and its date
+L["LIST_MORE"] = "%s and %d more" -- a few names, then how many others
 L["WARN_ENTRY"] = "Revision %d, recorded by %s, doesn't match the roll you watched."
 
 -- Why the ledger turned an entry down, after "Not recorded:", "was refused:" and the like. -------------------------
 
-L["LEDGER_LOAD_ERROR"] = "entry %d: %s"
 L["LEDGER_NO_GUILD"] = "you're not in a guild"
 L["LEDGER_NOT_OFFICER"] = "only officers can record entries"
 L["LEDGER_SYNCING"] = "your ledger is still syncing"
-L["LEDGER_NOT_ENTRY"] = "not an entry"
-L["LEDGER_EXPECTED_REVISION"] = "expected revision %d"
-L["LEDGER_DOESNT_FOLLOW"] = "doesn't follow on from revision %d"
-L["LEDGER_BAD_HASH"] = "the hash doesn't match the contents"
-L["LEDGER_NO_TIME"] = "no time"
-L["LEDGER_UNKNOWN_TYPE"] = "unknown entry type %s"
-L["LEDGER_MALFORMED_AWARD"] = "malformed award"
-L["LEDGER_NO_ENTRANT"] = "a roll from %s with no entrant"
-L["LEDGER_DIDNT_ROLL"] = "%s is an entrant but didn't roll"
-L["LEDGER_ALREADY_WON"] = "%s has already won this item"
-L["LEDGER_PITY_MISMATCH"] = "%s's pity (%d) doesn't match the table (%d)"
-L["LEDGER_ROUND_AFTER"] = "a round after the roll was decided"
-L["LEDGER_REROLL_NOT_ENTRANT"] = "a reroll from %s who isn't an entrant"
-L["LEDGER_BAD_ROLL"] = "%s: %s" -- a player, and why their roll doesn't count (below)
-L["LEDGER_UNDECIDED"] = "the rolls don't decide the item"
-L["LEDGER_WRONG_WINNERS"] = "the winners don't match the rolls"
-L["LEDGER_MALFORMED_ADJUSTMENT"] = "malformed adjustment"
-L["LEDGER_PITY_RANGE"] = "pity must be a whole number from 0 to %d"
-L["LEDGER_MALFORMED_ROLES"] = "malformed roles"
-L["LEDGER_UNKNOWN_ROLE"] = "unknown role %s"
-L["LEDGER_MALFORMED_LEAVE"] = "malformed leave"
-L["LEDGER_ALREADY_LEFT"] = "%s has already left"
-L["LEDGER_MALFORMED_REJOIN"] = "malformed rejoin"
-L["LEDGER_HASNT_LEFT"] = "%s hasn't left"
 -- Why a roll doesn't count: in a recorded award, and on your own row on the Roll tab.
 L["WHY_LATE"] = "too late"
 L["WHY_RANGE"] = "rolled %d-%d"

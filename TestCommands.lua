@@ -67,12 +67,14 @@ local function RandomItems(count)
 	return items
 end
 
--- greed sets the greed-roll counter (4.8), which a greed roll's pity comes from.
+-- Test pity as an officer's change; greed rolls have none (4.8). The item's made-up raid and boss go straight into the
+-- test table, so My pity can show its groups.
 local function SetPity(id, item, pity, instance, boss, greed)
-	return ns.AppendEntry({
-		type = "adjust", id = id, item = item, pity = pity, time = GetServerTime(), by = ns.PlayerName(),
-		instance = instance, boss = boss, greed = greed or nil,
-	})
+	if greed or pity <= 0 then return true end
+	if instance and ns.ledger then ns.ledger:Learn(item, instance, boss) end
+	local now = ns.ledger and ns.ledger:Pity(id, item) or 0
+	if pity == now then return true end
+	return ns.RecordChange(ns.NewChange({ op = "adjust", id = id, item = item, steps = (pity - now) / ns.PITY_STEP }))
 end
 
 local function NextFake()
@@ -104,8 +106,8 @@ end
 
 function test.reset()
 	if not InTestMode() then return end
-	ns.saved.ledgers[ns.guild] = nil
-	ns.ledgers[ns.guild] = nil
+	ns.saved.ledger[ns.guild] = nil
+	if ns.saved.log then ns.saved.log[ns.guild] = nil end
 	ns.guild = nil
 	fakes = {}
 	ns.CancelRoll()

@@ -96,6 +96,16 @@ local function IsActive(m)
 	return m ~= nil and (m.state == "open" or m.state == "reroll")
 end
 
+-- A player's pity on the roll's item: none on a greed roll (4.8). Everyone's comes from what the writer sent as the roll
+-- started (m.pool), so every client works the odds out alike; your own, if it isn't there, from your own row, and the
+-- writer's from its table (6.3).
+local function PityIn(m, id)
+	if m.greed then return 0 end
+	if m.pool and m.pool[id] then return m.pool[id] end
+	if id == UnitGUID("player") or ns.AmWriter() then return ns.PityOf(id, m.item) end
+	return 0
+end
+
 local function NameList(ids)
 	local names = {}
 	for i, id in ipairs(ids) do names[i] = ns.NameOf(id) end
@@ -171,11 +181,13 @@ local function VerifyRound(m, round)
 			ns.Warn(L.WARN_UNCOUNTED:format(ns.NameOf(id), rounds[round]))
 		end
 	end
-	if round == 1 and ns.ledger then
+	-- Each player checks the pity used for their own roll; officers, who hold the table, check everyone's (6.1).
+	if round == 1 and ns.ledger and not m.greed then
+		local me = UnitGUID("player")
 		for id, entrant in pairs(m.entrants) do
-			local mine = ns.ledger.state:GetPity(id, m.item, m.greed, m.opened)
-			if mine ~= entrant.pity then
-				ns.Warn(L.WARN_PITY:format(ns.NameOf(id), entrant.pity, (ns.ledger:Revision()), mine))
+			if id == me or ns.HoldsTable() then
+				local mine = ns.PityOf(id, m.item)
+				if mine ~= entrant.pity then ns.Warn(L.WARN_PITY:format(ns.NameOf(id), entrant.pity, ns.Head().rev, mine)) end
 			end
 		end
 	end
@@ -188,18 +200,38 @@ local function VerifyWinners(m)
 	end
 end
 
--- Checks a ledger entry for a roll this client watched against the mirror.
-function ns.CheckEntry(entry)
+-- Checks the writer's result for a roll this client watched: the players who lost and won it are the ones who rolled.
+local function CheckResult(m, change, head)
+	if m.partial then return end
+	local entrants = {}
+	for id in pairs(m.entrants) do entrants[#entrants + 1] = id end
+	local listed = {}
+	for _, id in ipairs(change.losers) do listed[#listed + 1] = id end
+	for _, id in ipairs(change.winners) do listed[#listed + 1] = id end
+	if not SameMembers(entrants, listed) or not SameMembers(change.winners, m.winners) then
+		ns.Warn(L.WARN_ENTRY:format(head.rev or 0, ns.NameOf(change.by) or tostring(change.by)))
+	end
+end
+
+-- Whether a result is for the roll this client watched, which its log has as the roll itself, so an officer doesn't
+-- log it twice (Pity.lua): the one its award carried, or one from the roll's writer for its item that arrives first,
+-- while the roll is decided and waiting to be awarded.
+function ns.WatchedRoll(change)
 	local m = live.mirror
-	if ns.AmWriter() or not m or m.partial or entry.type ~= "award" or entry.sid ~= m.sid then return end
-	local same = ns.Serialize(entry.rounds) == ns.Serialize(m.rounds) and SameMembers(entry.winners, m.winners)
-	for id, recorded in pairs(entry.entrants) do
-		local seen = m.entrants[id]
-		if not seen or seen.pity ~= recorded.pity or (seen.offSpec or false) ~= (recorded.offSpec or false) then same = false end
+	if not m then return false end
+	if m.result == nil and m.state == "decided" and m.item == change.item and live.writer
+		and ns.SameName(ns.NameOf(change.by) or "", live.writer) then
+		m.result = ns.DiffKey(change)
 	end
-	if not same then
-		ns.Warn(L.WARN_ENTRY:format(entry.rev, tostring(entry.by)))
-	end
+	return m.result ~= nil and m.result == ns.DiffKey(change)
+end
+
+-- Notes a roll in this client's full log (6.1).
+local function LogAward(m)
+	ns.LogEvent({
+		kind = "award", sid = m.sid, item = m.item, copies = m.copies, greed = m.greed, instance = m.instance, boss = m.boss,
+		entrants = ns.Copy(m.entrants), rounds = ns.Copy(m.rounds), winners = ns.Copy(m.winners), writer = live.writer,
+	})
 end
 
 -- Odds -----------------------------------------------------------------------------------------------------------
@@ -219,15 +251,8 @@ local function RefreshOdds()
 	end
 	if m.state == "open" then
 		for id, entrant in pairs(m.entrants) do Add(id, entrant.pity, entrant.offSpec) end
-		local state = ns.ledger and ns.ledger.state
-		if state then
-			for _, member in ipairs(ns.GroupMembers()) do
-				local id = member.guid
-				if not m.entrants[id] and not m.passed[id] and ns.MayRollOn(id, m.item, m.greed) then
-					local pity = state:GetPity(id, m.item, m.greed, m.opened)
-					if pity > 0 then Add(id, pity) end
-				end
-			end
+		for id, pity in pairs(m.pool or {}) do
+			if not m.entrants[id] and not m.passed[id] then Add(id, pity) end
 		end
 	else
 		copies = m.slots
@@ -239,7 +264,7 @@ local function RefreshOdds()
 	local me = UnitGUID("player")
 	local withMe
 	if ns.CanRoll() and not inPool[me] then
-		withMe = { { id = me, pity = ns.ledger and ns.ledger.state:GetPity(me, m.item, m.greed, m.opened) or 0,
+		withMe = { { id = me, pity = PityIn(m, me),
 			offSpec = not m.greed and ns.IsOffSpec(me, m.item) or nil } }
 		for i, p in ipairs(pool) do withMe[i + 1] = p end
 	end
@@ -271,13 +296,18 @@ function Valid.open(d)
 		and type(d.secs) == "number"
 end
 function Mirror.open(d)
+	-- The pity of everyone in the group with some on the item, from the writer's table (6.3).
+	local pool = {}
+	local _, list = ns.Decode(ns.ReadPool, type(d.pool) == "string" and d.pool or "")
+	for _, entry in ipairs(list or {}) do pool[entry[1]] = (entry[2] + 1) * ns.PITY_STEP end
 	live.mirror = {
 		sid = d.sid, item = d.item, copies = d.copies, greed = d.greed, opened = d.opened,
 		instance = type(d.instance) == "string" and d.instance or nil, boss = type(d.boss) == "string" and d.boss or nil,
-		state = "open", round = 1, ends = GetTime() + d.secs, duration = d.secs,
+		state = "open", round = 1, ends = GetTime() + d.secs, duration = d.secs, pool = pool,
 		entrants = {}, rounds = { {} }, winners = {}, rejects = {}, passed = {},
 	}
 	live.observed = {}
+	ns.LearnSource(d.item, live.mirror.instance, live.mirror.boss)
 end
 
 function Valid.rolls(d)
@@ -337,6 +367,7 @@ function Mirror.decided(d, m)
 	VerifyRound(m, m.round)
 	m.state, m.winners, m.ends, m.closed = "decided", d.winners, nil, GetTime()
 	VerifyWinners(m)
+	if ns.ReportWins then ns.ReportWins(m, live.writer) end
 end
 
 function Valid.cancel()
@@ -347,10 +378,22 @@ function Mirror.cancel(_, m)
 end
 
 function Valid.awarded(d)
-	return type(d.rev) == "number" and (d.given == nil or type(d.given) == "table")
+	return type(d.rev) == "number" and (d.given == nil or type(d.given) == "table") and (d.change == nil or type(d.change) == "string")
+		and (d.sigs == nil or type(d.sigs) == "table")
 end
 function Mirror.awarded(d, m)
 	m.state, m.rev, m.given = "awarded", d.rev, d.given
+	if ns.AmWriter() then return end
+	LogAward(m)
+	-- Officers add the result to their table; members their own share to their row, with its new signature (6.3).
+	local head = { rev = d.rev, by = type(d.by) == "string" and d.by or "" }
+	local changes = d.change and ns.Decode(ns.ReadDiffs, d.change)
+	local change = changes and changes[1]
+	if change and change.op == "result" then
+		m.result = ns.DiffKey(change)
+		CheckResult(m, change, head)
+		ns.TakeResult(change, d.sigs, head)
+	end
 end
 
 function Valid.disenchant()
@@ -509,10 +552,9 @@ local function WriterRoll(name, roll, low, high)
 	local id, pity, offSpec, guessed = member.guid, nil, nil, nil
 	-- Anyone can greed-roll, and greed is for gold, so nobody is off-spec for it (4.8).
 	if m.round == 1 then
-		local state = ns.ledger.state
-		if not m.greed and state:HasWon(id, m.item) then return Refuse("won") end
+		if not m.greed and ns.HasWon(id, m.item) then return Refuse("won") end
 		if not m.greed and not ns.CanUse(id, m.item) then return Refuse("cantuse") end
-		pity = state:GetPity(id, m.item, m.greed, m.opened)
+		pity = PityIn(m, id)
 		if m.greed then offSpec = false else offSpec, guessed = ns.IsOffSpec(id, m.item) end
 	end
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
@@ -549,6 +591,7 @@ function ns.ClaimWriter()
 	if not ns.IsOfficer(ns.PlayerName()) then return ns.Print(L.MSG_WRITER_OFFICERS) end
 	if not ns.ledger then return ns.Print(L.MSG_LEDGER_NOT_LOADED) end
 	live.writer = ns.PlayerName()
+	ns.MergeChanges()
 	SendLive("writer", {})
 	local m = live.mirror
 	if m and (IsActive(m) or m.state == "decided") then
@@ -560,6 +603,7 @@ function ns.ClaimWriter()
 	end
 	rolesSent = nil
 	ns.Fire("ROLES_CHANGED")
+	ns.RememberRoles()
 	ns.InspectRoles()
 	ns.Fire("SESSION_CHANGED")
 end
@@ -577,10 +621,27 @@ function ns.LastBoss()
 	return lastKill and lastKill.instance == instance and lastKill.boss or nil
 end
 
-local function DropSource()
+-- The boss comes from the loot: a boss's corpse, or trash (Loot.lua); failing that, the boss last killed here.
+local function DropSource(item)
 	local name, instanceType = GetInstanceInfo()
 	if instanceType ~= "raid" and instanceType ~= "party" then return nil end
-	return name, lastKill and lastKill.instance == name and lastKill.boss or nil
+	local boss = ns.LootBossOf(item)
+	if boss == nil then boss = lastKill and lastKill.instance == name and lastKill.boss or nil end
+	return name, boss or nil
+end
+
+-- The pity of everyone in the group who could roll and has some on the item, packed for the roll's start (6.3).
+local function PoolFor(item, greed)
+	if greed then return nil end
+	local pool = {}
+	for _, member in ipairs(ns.GroupMembers()) do
+		local id = member.guid
+		if id and ns.MayRollOn(id, item) then
+			local pity = ns.PityOf(id, item)
+			if pity > 0 then pool[#pool + 1] = { id, pity / ns.PITY_STEP - 1 } end
+		end
+	end
+	return pool[1] and ns.EncodePool(item, pool) or nil
 end
 
 function ns.StartRoll(item, copies, greed)
@@ -593,12 +654,12 @@ function ns.StartRoll(item, copies, greed)
 	copies = copies or 1
 	count = count + 1
 	local opened = GetServerTime()
-	local instance, boss = DropSource()
+	local instance, boss = DropSource(item)
 	engine = ns.NewSession(item, copies, greed)
 	Emit("open", {
 		sid = ("%s:%d:%d"):format(ns.PlayerName(), opened, count),
 		item = item, copies = copies, greed = greed or nil, opened = opened, secs = ns.settings.rollTime,
-		instance = instance, boss = boss,
+		instance = instance, boss = boss, pool = PoolFor(item, greed),
 	})
 	local what = copies > 1 and CHAT.COPIES:format(ns.ItemLink(item), copies) or ns.ItemLink(item)
 	Announce((greed and CHAT.GREED_ROLL_START or CHAT.ROLL_START):format(what, ns.settings.rollTime), true)
@@ -662,21 +723,34 @@ function ns.CloseRound()
 	if ns.settings.autoAward then ns.Award() end
 end
 
--- Records the roll in the ledger, which is when the losers gain pity (4.1), and hands out the item.
+-- Hands out the item and records the result, which is when the losers gain pity (4.1): the writer adds it to its table
+-- as a change, and tells the group with the new signatures of the sub-rows it changed (6.3). A greed roll changes no
+-- pity (4.8).
 function ns.Award()
 	local m = live.mirror
 	if not ns.AmWriter() or not engine or not engine.done or not m or m.state ~= "decided" then
 		return ns.Print(L.MSG_NOTHING_TO_AWARD)
 	end
-	local entry = engine:Record()
-	entry.time, entry.by, entry.sid = m.opened, ns.PlayerName(), m.sid
-	entry.instance, entry.boss = m.instance, m.boss
-	for id, entrant in pairs(entry.entrants) do entrant.name = m.entrants[id] and m.entrants[id].name end
-	local ok, err = ns.AppendEntry(entry)
-	if not ok then return ns.Warn(L.WARN_AWARD_FAILED:format(err)) end
-	local given = ns.GiveLoot(m.item, engine.winners)
+	local winners = ns.Copy(engine.winners)
+	local change, sigs
+	if not m.greed then
+		local won, losers = {}, {}
+		for _, id in ipairs(winners) do won[id] = true end
+		for id in pairs(engine.entrants) do
+			if not won[id] then losers[#losers + 1] = id end
+		end
+		table.sort(losers)
+		change, sigs = ns.RecordResult(m.item, m.instance, m.boss, losers, winners)
+		if not change then return ns.Warn(L.WARN_AWARD_FAILED:format(L.LEDGER_NOT_OFFICER)) end
+	end
+	LogAward(m)
+	local given = ns.GiveLoot(m.item, winners)
 	engine = nil
-	Emit("awarded", { sid = m.sid, rev = entry.rev, given = given[1] and given or nil })
+	local head = ns.Head()
+	Emit("awarded", {
+		sid = m.sid, rev = head.rev, by = head.by, given = given[1] and given or nil,
+		change = change and ns.EncodeDiffs({ change }) or nil, sigs = sigs,
+	})
 end
 
 -- A BoP item no one rolled on is disenchanted, and a BoE no one greed-rolled on is kept to sell (it's worth more on
@@ -722,15 +796,16 @@ function ns.ToggleOffSpec(id)
 	if engine:SetOffSpec(id, offSpec) then Emit("os", { sid = m.sid, id = id, os = offSpec or nil }) end
 end
 
--- An officer's say on which roles an item is for (4.6), recorded in the ledger so every client agrees and
--- later drops use it. If the writer is running an open roll for the item, everyone's off-spec flag follows it.
+-- An officer's say on which roles an item is for (4.6), kept in the ledger's item table so every client
+-- agrees and later drops use it. If the writer is running an open roll for the item, everyone's off-spec flag follows
+-- it. No role ticked means any role, as every role ticked does.
 function ns.SetItemRoles(item, suits)
 	if not ns.IsOfficer(ns.PlayerName()) then return end
-	local list = {}
+	local bits = 0
 	for _, role in ipairs(ns.ROLE_ORDER) do
-		if suits[role] then list[#list + 1] = role end
+		if suits[role] then bits = bits + ns.ROLE_BITS[role] end
 	end
-	local ok, err = ns.AppendEntry({ type = "roles", item = item, roles = list, time = GetServerTime(), by = ns.PlayerName() })
+	local ok, err = ns.RecordChange(ns.NewChange({ op = "itemroles", item = item, roles = bits ~= 0 and bits or 7 }))
 	if not ok then return ns.Print(L.MSG_ROLES_FAILED:format(err)) end
 	local m = live.mirror
 	if not (ns.AmWriter() and engine and m and m.state == "open" and m.item == item and not m.greed) then return end
@@ -810,7 +885,7 @@ function ns.WhyCantRoll()
 		return not m.contenders[me] and "nottied" or nil
 	end
 	if m.greed then return nil end
-	if ns.ledger and ns.ledger.state:HasWon(me, m.item) then return "won" end
+	if ns.HasWon(me, m.item) then return "won" end
 	if not ns.CanUse(me, m.item) then return "class" end
 	return nil
 end
@@ -844,7 +919,7 @@ end
 -- may greed-roll (4.8).
 function ns.MayRollOn(id, item, greed)
 	if greed then return true end
-	if ns.ledger and ns.ledger.state:HasWon(id, item) then return false end
+	if ns.HasWon(id, item) then return false end
 	return ns.CanUse(id, item)
 end
 
@@ -899,10 +974,22 @@ end
 
 local toldRole -- the role this client last told the writer
 
--- What this client says about its own role: the role its talents show, or why they don't settle one.
+-- What this client says to the writer: the role its talents show, or why they don't settle one; and, for a member,
+-- what its own row holds, so the writer can send back anything that differs (the row check, 6.3).
 local function MyRoleMessage()
 	local role, why = ns.MyRole()
-	return { role = role, why = (why == "nocapstone" or why == "ambiguous") and why or nil }
+	local message = { role = role, why = (why == "nocapstone" or why == "ambiguous") and why or nil }
+	if ns.ledger and not ns.HoldsTable() then
+		local me = UnitGUID("player")
+		message.check = ns.EncodeRowCheck(me, ns.RowsOf(me))
+	end
+	return message
+end
+
+-- The writer checking a raider's row (6.3).
+local function CheckRaiderRows(d, sender)
+	local member = ns.AmWriter() and type(d.check) == "string" and ns.GroupMember(sender)
+	if member then ns.CheckRows(member.guid, d.check) end
 end
 
 ns.Receive(LIVE, "writer", function(_, sender)
@@ -919,7 +1006,9 @@ ns.Receive(LIVE, "writer", function(_, sender)
 end)
 
 ns.Receive(LIVE, "here", function(d, sender)
-	if type(d) == "table" then ns.ToldRole(sender, d.role, d.why) end
+	if type(d) ~= "table" then return end
+	ns.ToldRole(sender, d.role, d.why)
+	CheckRaiderRows(d, sender)
 end)
 
 -- A new spec or talents can mean a new role; the writer hears of it, though a role already used for a roll stays.
@@ -939,13 +1028,16 @@ ns.OnMessage(LIVE, function(sender)
 end)
 
 ns.Receive(LIVE, "query", function(d, sender)
-	if type(d) == "table" then ns.ToldRole(sender, d.role, d.why) end
+	if type(d) == "table" then
+		ns.ToldRole(sender, d.role, d.why)
+		CheckRaiderRows(d, sender)
+	end
 	if not ns.AmWriter() then return end
 	local m = live.mirror and ns.Copy(live.mirror)
 	if m then m.odds, m.myOdds, m.ends, m.autoRollAt, m.rolledRound = nil, nil, nil, nil, nil end
 	SendLive("state", {
 		mirror = m, left = live.mirror and live.mirror.ends and live.mirror.ends - GetTime(), loot = ns.Copy(ns.loot),
-		roles = ns.RoleMap(),
+		roles = ns.RoleMap(), head = ns.Head() and { rev = ns.Head().rev, by = ns.Head().by } or nil,
 	}, sender)
 end)
 
@@ -961,12 +1053,17 @@ ns.Receive(LIVE, "state", function(d, sender)
 		live.mirror, live.observed = m, {}
 	end
 	ns.RestoreLoot(d.loot)
+	local head = d.head
+	if ns.ledger and not ns.HoldsTable() and type(head) == "table" and type(head.rev) == "number" then
+		ns.ledger.data.head.rev, ns.ledger.data.head.by = head.rev, type(head.by) == "string" and head.by or ""
+	end
 	Changed("state")
 end)
 
 ns.On("GROUP_ROSTER_UPDATE", function()
 	if not IsInGroup() and not ns.IsTestMode() then
 		StopWriting()
+		ns.ForgetTaken()
 		live.writer, live.mirror, live.observed, queried = nil, nil, {}, false
 	else
 		if live.writer and not ns.GroupMember(live.writer) then
@@ -1049,7 +1146,7 @@ function ns.SessionRows()
 	end
 	for _, id in ipairs(m.winners or {}) do Row(id).winner = true end
 	for _, row in ipairs(rows) do
-		if not row.pity and ns.ledger then row.pity = ns.ledger.state:GetPity(row.id, m.item, m.greed, m.opened) end
+		if not row.pity then row.pity = PityIn(m, row.id) end
 		if row.roll then row.total = ns.EffectiveRoll(row.roll, ns.Bonus(row.pity or 0, row.offSpec)) end
 		row.contender = m.contenders and m.contenders[row.id] or nil
 		if row.passed then row.odds = nil end
@@ -1060,7 +1157,7 @@ function ns.SessionRows()
 		row.prompt = true
 		row.odds = row.odds or m.myOdds
 		row.autoRollAt = m.autoRollAt
-		if not row.pity and ns.ledger then row.pity = ns.ledger.state:GetPity(row.id, m.item, m.greed, m.opened) end
+		if not row.pity then row.pity = PityIn(m, row.id) end
 	end
 	table.sort(rows, function(a, b)
 		local aTop, bTop = a.prompt or a.rolling or false, b.prompt or b.rolling or false

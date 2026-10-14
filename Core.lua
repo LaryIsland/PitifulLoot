@@ -1,6 +1,5 @@
 local addonName, ns = ...
 
-ns.ledgers = {}
 ns.warnings = {}
 
 -- The options, kept in AceDB profiles (Options.lua).
@@ -103,7 +102,8 @@ function ns.IsMe(name)
 end
 
 ---@class PitifulLootGlobal
----@field ledgers table<string, table[]> each guild's saved ledger entries
+---@field ledger table<string, table> each guild's ledger (Pity.lua, Ledger.lua)
+---@field log table<string, table[]> each guild's full log: what this client saw, never shared (Pity.lua)
 ---@field names table<string, string> names by GUID, for players who aren't online
 ---@field classes table<string, string> class file names by GUID, to colour those names
 ---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
@@ -119,7 +119,7 @@ ns.On("ADDON_LOADED", function(name)
 	if name ~= addonName then return end
 	local db = LibStub("AceDB-3.0"):New("PitifulLootDB", {
 		profile = DEFAULTS,
-		global = { ledgers = {}, names = {}, classes = {}, testOfficers = {}, minimapIcon = {}, collapsed = {},
+		global = { ledger = {}, log = {}, names = {}, classes = {}, testOfficers = {}, minimapIcon = {}, collapsed = {},
 			roleOverrides = {} },
 	}, true)
 	ns.database = db
@@ -129,29 +129,6 @@ ns.On("ADDON_LOADED", function(name)
 		db.RegisterCallback(ns, event, ns.ProfileChanged)
 	end
 end)
-
--- A guild's ledger, replayed from its saved entries. If a saved entry won't replay, the saved copy is left alone so
--- nothing is lost, and the ledger stops before that entry with loadError set.
-function ns.GetLedger(guild)
-	if not ns.ledgers[guild] then
-		local ledger, bad, err = ns.LoadLedger(ns.saved.ledgers[guild])
-		if err then
-			ledger.loadError = ns.L.LEDGER_LOAD_ERROR:format(bad, err)
-		else
-			ns.saved.ledgers[guild] = ledger.entries
-		end
-		ns.ledgers[guild] = ledger
-	end
-	return ns.ledgers[guild]
-end
-
--- Swaps in a ledger fetched from an officer with /pl resync.
-function ns.ReplaceLedger(ledger)
-	ns.saved.ledgers[ns.guild] = ledger.entries
-	ns.ledgers[ns.guild] = ledger
-	ns.ledger = ledger
-	ns.Fire("LEDGER_CHANGED")
-end
 
 -- Test mode (TestCommands.lua, temporary) keeps its own ledger, so nothing done in it reaches the guild's.
 function ns.IsTestMode()
@@ -163,17 +140,15 @@ function ns.ViewAsMember()
 	return ns.IsTestMode() and ns.saved.testViewAsMember == true
 end
 
--- The ledger in use is the current guild's, once the client knows which guild that is.
+-- The ledger in use is the current guild's, once the client knows which guild that is (Pity.lua).
 local function UpdateGuild()
 	if not ns.saved then return end
 	local guild = IsInGuild() and GetGuildInfo("player") or nil
 	if ns.IsTestMode() then guild = (guild or "No guild") .. " [test]" end
 	if guild == ns.guild then return end
 	ns.guild = guild
-	ns.ledger = guild and ns.GetLedger(guild) or nil
-	if ns.ledger and ns.ledger.loadError then
-		ns.Warn(ns.L.WARN_LEDGER_LOAD:format(ns.ledger.loadError))
-	end
+	ns.ledger = guild and ns.LoadLedger(guild) or nil
+	if ns.ledger then ns.SignRows() end
 	ns.Fire("LEDGER_READY")
 	ns.Fire("LEDGER_CHANGED")
 end

@@ -47,9 +47,10 @@ function ns.LatestLoot()
 	return ns.loot.groups[#ns.loot.groups]
 end
 
--- Adds a boss's loot as a new group. Opening the same loot again keeps where each item has got to, unless `fresh`.
--- The same loot is the same corpse, even once some of it has been handed out, or failing that the same items.
-function ns.SetLoot(items, from, boss, fresh, time, source)
+-- Adds a boss's loot as a new group (`trash` if it came from trash). Opening the same loot again keeps where each item
+-- has got to, unless `fresh`. The same loot is the same corpse, even once some of it has been handed out, or failing
+-- that the same items.
+function ns.SetLoot(items, from, boss, fresh, time, source, trash)
 	local key = KeyOf(items)
 	if not fresh then
 		for _, group in ipairs(ns.loot.groups) do
@@ -61,7 +62,7 @@ function ns.SetLoot(items, from, boss, fresh, time, source)
 	end
 	local group = {
 		key = key .. "#" .. (#ns.loot.groups + 1), source = source, contents = key, boss = boss, from = from,
-		time = time or GetServerTime(), items = items,
+		time = time or GetServerTime(), items = items, trash = trash or nil,
 	}
 	table.insert(ns.loot.groups, group)
 	ns.Capture("loot", group)
@@ -75,12 +76,32 @@ function ns.ShareLoot()
 	if not IsInGroup() or not group then return end
 	local items = {}
 	for i, entry in ipairs(group.items) do items[i] = { item = entry.item, copies = entry.copies, boe = entry.boe } end
-	ns.Send(LIVE, "loot", { items = items, boss = group.boss, time = group.time, source = group.source },
+	ns.Send(LIVE, "loot", { items = items, boss = group.boss, time = group.time, source = group.source, trash = group.trash },
 		IsInRaid() and "RAID" or "PARTY")
 end
 
--- Who dropped it: the boss last killed here, or the corpse being looted.
-local function LootedBoss()
+-- The bosses of the encounter under way or just ended, by GUID, from the boss unit frames, so loot from one of their
+-- corpses is that boss's and loot from any other corpse in a raid is trash (6.1).
+local bosses = {}
+local function NoteBosses()
+	for i = 1, 5 do
+		local guid = UnitGUID("boss" .. i)
+		if canaccessvalue(guid) and guid then bosses[guid] = true end
+	end
+end
+ns.On("ENCOUNTER_START", function()
+	bosses = {}
+	NoteBosses()
+end)
+ns.On("INSTANCE_ENCOUNTER_ENGAGE_UNIT", NoteBosses)
+
+-- Who dropped it: the boss last killed here if the corpse is one of its bosses, or false for trash in a raid; without
+-- a corpse to go by (or before any boss here), the boss last killed here, or the corpse being looted.
+local function LootedBoss(source)
+	local _, instanceType = GetInstanceInfo()
+	if source and next(bosses) and instanceType == "raid" then
+		return bosses[source] and ns.LastBoss() or false
+	end
 	local boss = ns.LastBoss()
 	if boss then return boss end
 	if UnitExists("target") and UnitIsDead("target") and not UnitIsPlayer("target") then return (UnitName("target")) end
@@ -90,8 +111,22 @@ ns.On("LOOT_OPENED", function()
 	given = {}
 	if not ns.IsOfficer(ns.PlayerName()) then return end
 	local items, source = Scan()
-	if items[1] and ns.SetLoot(items, ns.PlayerName(), LootedBoss(), false, nil, source) then ns.ShareLoot() end
+	local boss = LootedBoss(source)
+	if items[1] and ns.SetLoot(items, ns.PlayerName(), boss or nil, false, nil, source, boss == false) then ns.ShareLoot() end
 end)
+
+-- Where the newest loot with an item still to roll for came from: its boss, false for trash, or nil if not known.
+function ns.LootBossOf(item)
+	local groups = ns.loot.groups
+	for g = #groups, 1, -1 do
+		for _, entry in ipairs(groups[g].items) do
+			if entry.item == item and not ns.LootDone(entry) then
+				if groups[g].trash then return false end
+				return groups[g].boss
+			end
+		end
+	end
+end
 ns.On("LOOT_CLOSED", function() given = {} end)
 
 ns.Receive(LIVE, "loot", function(d, sender)
@@ -103,7 +138,7 @@ ns.Receive(LIVE, "loot", function(d, sender)
 		end
 	end
 	ns.SetLoot(items, sender, type(d.boss) == "string" and d.boss or nil, false, type(d.time) == "number" and d.time or nil,
-		type(d.source) == "string" and d.source or nil)
+		type(d.source) == "string" and d.source or nil, d.trash == true)
 end)
 
 -- A late joiner's copy of the loot, statuses included, from the writer's reply to their query; or the loot saved

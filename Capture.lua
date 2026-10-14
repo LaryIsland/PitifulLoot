@@ -70,7 +70,7 @@ function ns.StartCapture()
 	end
 	ns.Capture("start", {
 		me = UnitGUID("player"), guild = ns.guild, group = members, inRaid = IsInRaid(),
-		ledger = ns.ledger and ns.ledger.entries, settings = ns.settings, writer = ns.live and ns.live.writer,
+		ledger = ns.ledger and ns.ledger.data, settings = ns.settings, writer = ns.live and ns.live.writer,
 	})
 end
 

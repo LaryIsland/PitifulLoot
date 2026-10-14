@@ -70,13 +70,14 @@ local function IsOfficerRank(rank, known)
 end
 
 local function RebuildGuild()
-	guild = { byName = {}, byGuid = {}, onlineOfficers = {} }
+	guild = { byName = {}, byGuid = {}, onlineOfficers = {}, officers = {} }
 	local officerRanks = {}
 	for i = 1, GetNumGuildMembers() do
 		local name, _, rank, _, _, _, _, _, online, _, class, _, _, _, _, _, guid = GetGuildRosterInfo(i)
 		if name then
 			local member = { name = name, rank = rank, guid = guid, class = class, officer = rank ~= nil and IsOfficerRank(rank, officerRanks) }
 			if member.officer and online then guild.onlineOfficers[#guild.onlineOfficers + 1] = member end
+			if member.officer then guild.officers[#guild.officers + 1] = member end
 			guild.byName[name] = member
 			local short = ns.ShortName(name)
 			guild.byName[short] = guild.byName[short] or member
@@ -139,6 +140,12 @@ end
 function ns.OnlineOfficers()
 	if guildDirty then RebuildGuild() end
 	return guild.onlineOfficers
+end
+
+-- Every officer in the guild, online or not.
+function ns.GuildOfficers()
+	if guildDirty then RebuildGuild() end
+	return guild.officers
 end
 
 -- A player's GUID from their name, looking in the group and then the guild.
@@ -341,13 +348,20 @@ local function SuggestedRoles(item)
 	return suits
 end
 
--- The roles an item is for, as a set, or nil for any role: an officer's say, recorded in the ledger, or
--- else what its stats suggest. Items that aren't gear, or whose stats say nothing, suit any role.
+-- The roles an item is for, as a set, or nil for any role: an officer's say, kept in the ledger's item table
+-- as role bits, or else what its stats suggest. Items that aren't gear, or whose stats say nothing, suit any role.
 function ns.ItemRoles(item)
 	if ns.ForEveryone(item) then return nil end
-	local state = ns.ledger and ns.ledger.state
-	local suits = state and state.roles[item]
-	if suits == nil then suits = SuggestedRoles(item) end
+	local bits = ns.ledger and ns.ledger:ItemRoles(item)
+	local suits
+	if bits then
+		suits = {}
+		for role, bit in pairs(ns.ROLE_BITS) do
+			if bits % (bit * 2) >= bit then suits[role] = true end
+		end
+	else
+		suits = SuggestedRoles(item)
+	end
 	if not suits or next(suits) == nil then return nil end
 	for _, role in ipairs(ns.ROLE_ORDER) do
 		if not suits[role] then return suits end

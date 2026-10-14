@@ -13,19 +13,24 @@ local CHECK_INTERVAL = 60
 local scheduled = {}
 local readyAt
 
-local function Tracked(state)
+-- Everyone with pity in the table (someone with only wins has nothing to decay), and every leaver.
+local function Tracked(data)
 	local ids = {}
-	for _, store in ipairs({ state.pity, state.greed }) do
-		for id in pairs(store) do ids[id] = true end
+	for id, subs in pairs(data.rows) do
+		for _, sub in pairs(subs) do
+			for _, cell in pairs(sub.cells) do
+				if cell ~= ns.CELL_WON then ids[id] = true end
+			end
+		end
 	end
-	for id in pairs(state.left) do ids[id] = true end
+	for id in pairs(data.leavers) do ids[id] = true end
 	return ids
 end
 
--- "leave" or "rejoin" if the ledger and the roster disagree about a player, otherwise nil.
+-- "leave" or "rejoin" if the table and the roster disagree about a player, otherwise nil.
 local function Change(id)
 	local inGuild = ns.GuildMember(id) ~= nil
-	local left = ns.ledger.state.left[id] ~= nil
+	local left = ns.ledger.data.leavers[id] ~= nil
 	if left and inGuild then return "rejoin" end
 	if not left and not inGuild then return "leave" end
 end
@@ -38,20 +43,22 @@ end
 
 local function Record(id, kind, noticed)
 	scheduled[id] = nil
-	if not ns.ledger or Change(id) ~= kind then return end
-	local ok = ns.AppendEntry({ type = kind, id = id, time = noticed, by = ns.PlayerName() })
+	if not ns.ledger or not ns.HoldsTable() or Change(id) ~= kind then return end
+	-- A leave is dated when it was first seen; a rejoin, now.
+	local ok = ns.RecordChange(ns.NewChange({ op = kind, id = id, time = kind == "leave" and noticed or nil }))
 	if ok then
 		local text = kind == "leave" and ns.L.MSG_LEFT_GUILD or ns.L.MSG_REJOINED_GUILD
-		ns.Print(text:format(ns.NameOf(id), (ns.ledger:Revision())))
+		ns.Print(text:format(ns.NameOf(id), ns.Head().rev))
 	end
 end
 
 local function Check()
 	-- A test ledger's made-up players are never in the guild.
-	if ns.IsTestMode() or not ns.ledger or not readyAt or GetTime() < readyAt or GetNumGuildMembers() == 0 then return end
+	if ns.IsTestMode() or not ns.ledger or not ns.HoldsTable() or not readyAt or GetTime() < readyAt
+		or GetNumGuildMembers() == 0 then return end
 	local turn = MyTurn()
 	if not turn then return end
-	for id in pairs(Tracked(ns.ledger.state)) do
+	for id in pairs(Tracked(ns.ledger.data)) do
 		local kind = Change(id)
 		if kind and not scheduled[id] then
 			scheduled[id] = true

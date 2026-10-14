@@ -371,7 +371,7 @@ local function LootLines()
 	local out = {}
 	TradeLines(out)
 	local canStart = AsWriter()
-	local state, me = ns.ledger and ns.ledger.state, UnitGUID("player")
+	local me = UnitGUID("player")
 	for index, group in ipairs(ns.loot.groups) do
 		local key = group.key
 		local items = ShownItems(group)
@@ -439,8 +439,8 @@ local function LootLines()
 				end
 			end
 			-- Your own pity on it, on the right, if you have any.
-			local won = state and state:HasWon(me, item)
-			local pity = state and state:GetPity(me, item, false, GetServerTime()) or 0
+			local won = ns.HasWon(me, item)
+			local pity = ns.PityOf(me, item)
 			local value, note = "", nil
 			if won then
 				note = L.LOOT_WON_NOTE
@@ -505,15 +505,15 @@ end
 -- currency list's. Items with the most pity come first; items already won come last.
 local function PityLines()
 	local out = {}
-	local state, me = ns.ledger and ns.ledger.state, UnitGUID("player")
-	if not state then return out end
-	local now = GetServerTime()
+	local me = UnitGUID("player")
+	if not ns.ledger then return out end
 	local byBoss = ns.settings.pityByBoss
 	local raids = {}
 	local function Add(item, pity, note, won)
-		local source = state.sources[item]
-		local raid = source and source.instance or OTHER_RAID
-		local boss = byBoss and (source and source.boss or OTHER_BOSS) or ""
+		-- Where it drops, from the item table: a raid's trash goes under Unknown boss, and the raidless catch-all is Other.
+		local raidName, bossName = ns.ledger:Source(item)
+		local raid = raidName and raidName ~= "" and raidName or OTHER_RAID
+		local boss = byBoss and (bossName and bossName ~= "" and bossName or OTHER_BOSS) or ""
 		raids[raid] = raids[raid] or { count = 0, bosses = {} }
 		raids[raid].count = raids[raid].count + 1
 		raids[raid].bosses[boss] = raids[raid].bosses[boss] or {}
@@ -531,14 +531,15 @@ local function PityLines()
 		})
 	end
 	-- Pity that's decayed to nothing isn't pity any more.
-	for _, greed in ipairs({ false, true }) do
-		for item in pairs((greed and state.greed or state.pity)[me] or {}) do
-			local pity = state:GetPity(me, item, greed, now)
-			if pity > 0 then Add(item, pity, greed and L.PITY_GREED or L.PITY_NEED) end
+	for _, sub in pairs(ns.RowsOf(me)) do
+		for item, cell in pairs(sub.cells) do
+			if cell == ns.CELL_WON then
+				if not ns.settings.hideWon then Add(item, nil, L.PITY_WON, true) end
+			else
+				local pity = ns.PityOf(me, item)
+				if pity > 0 then Add(item, pity) end
+			end
 		end
-	end
-	if not ns.settings.hideWon then
-		for item in pairs(state.won[me] or {}) do Add(item, nil, L.PITY_WON, true) end
 	end
 
 	if focusRaid then FocusRaid(raids) end
@@ -852,14 +853,13 @@ end
 local function UpdateFooter()
 	local ledger
 	if ns.ledger then
-		local rev = ns.ledger:Revision()
-		local head = ns.ledger.entries[rev]
+		local head = ns.Head()
 		if ns.SyncBusy() then
-			ledger = L.FOOTER_REVISION_SYNCING:format(rev)
-		elseif head and type(head.by) == "string" then
-			ledger = L.FOOTER_REVISION_BY:format(rev, ns.ColoredName(head.by))
+			ledger = L.FOOTER_REVISION_SYNCING:format(head.rev)
+		elseif type(head.by) == "string" and head.by ~= "" then
+			ledger = L.FOOTER_REVISION_BY:format(head.rev, ns.ColoredName(head.by))
 		else
-			ledger = L.FOOTER_REVISION:format(rev)
+			ledger = L.FOOTER_REVISION:format(head.rev)
 		end
 	else
 		ledger = L.FOOTER_NO_LEDGER
@@ -1178,7 +1178,8 @@ local function InspectingText()
 end
 
 -- A raider's tooltip. Under their name, while their talents are being inspected, it says so, in light blue; or if
--- looking at their talents last went wrong, why, in red (not when it asked for the role to be set and an officer has).
+-- looking at their talents last went wrong, why, in red (not when it asked for the role to be set and an officer has,
+-- or their last known role settles it).
 -- Then their role, with its icon, in white, and where it came from if that isn't certain. An unknown role has a
 -- question mark in place of the icon, with the fallback role rolls use. It's redrawn as things change while it's
 -- hovered (InitRaiderRow).
@@ -1187,7 +1188,7 @@ local function ShowRaiderTooltip(owner, member)
 	GameTooltip_SetTitle(GameTooltip, ns.ColoredName(member.guid, member.name))
 	local role, source, by = ns.RoleInfo(member.guid)
 	local reasonKey, busy = ns.RoleReason(member.guid), ns.IsInspecting(member.guid)
-	if source == "officer" and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
+	if (source == "officer" or source == "known") and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
 	local reason = ns.UNKNOWN_REASONS[reasonKey or ""]
 	if busy then
 		GameTooltip_AddColoredLine(GameTooltip, InspectingText(), INSPECTING_COLOR)

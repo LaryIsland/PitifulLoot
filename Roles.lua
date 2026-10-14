@@ -48,6 +48,7 @@ end
 ns.ROLE_SOURCES = {
 	officer = L.ROLE_SOURCE_OFFICER,
 	raid = L.ROLE_SOURCE_RAID,
+	known = L.ROLE_SOURCE_KNOWN, -- their last known role, as their talents are ambiguous
 	talents = false, -- told by their own client
 	inspect = false, -- read by inspecting them
 }
@@ -199,6 +200,13 @@ local function AssignedRole(member)
 	if canaccessvalue(role) and ns.ROLE_NAMES[role] and (not fills or fills[role]) then return role end
 end
 
+-- A guild member's last known role, from the ledger (6.1), if it's one their ambiguous talents leave open.
+local function LastKnown(member)
+	local last = ns.ledger and ns.ledger:LastRole(member.guid)
+	local open = AMBIGUOUS[member.class]
+	if last and open and open[last] then return last end
+end
+
 -- A member's role as things stand, and where it came from, apart from an officer's say.
 local function Resolve(member)
 	local fills = CLASS_ROLES[member.class]
@@ -211,6 +219,10 @@ local function Resolve(member)
 	if inspected[member.guid] then return inspected[member.guid], "inspect" end
 	local role = AssignedRole(member)
 	if role then return role, "raid" end
+	if ns.RoleReason(member.guid) == "ambiguous" then
+		role = LastKnown(member)
+		if role then return role, "known" end
+	end
 end
 
 -- The role a roll uses, and whether it's only the fallback for a role that's unknown.
@@ -316,6 +328,34 @@ function ns.ApplyRole(guid, role, by)
 	ns.Fire("ROLE_FOUND", member.guid, true)
 	return true
 end
+
+-- Last known roles ---------------------------------------------------------------------------------------------------
+
+-- The role a member's talents make certain, or an officer's say on it: the newest, even if a roll has used another.
+local function CertainRole(member)
+	local override = Overrides()[member.guid]
+	if override then return override.role end
+	if member.guid == UnitGUID("player") then return (ns.MyRole()) end
+	return told[member.guid] or inspected[member.guid]
+end
+
+-- The writer keeps each guild member's last known role in the ledger, for when their talents are ambiguous
+-- (4.6): it records a new one whenever their talents make a role certain or an officer sets one.
+local function Remember(member)
+	if not (member and Choices(member) and ns.ledger and ns.AmWriter() and ns.HoldsTable()) then return end
+	if not ns.GuildMember(member.guid) then return end
+	local role = CertainRole(member)
+	if not role or ns.ledger:LastRole(member.guid) == role then return end
+	ns.RecordChange(ns.NewChange({ op = "role", id = member.guid, role = ns.ROLE_CODES[role] }))
+end
+
+-- Everyone's, for a writer taking over.
+function ns.RememberRoles()
+	for _, member in ipairs(ns.GroupMembers()) do Remember(member) end
+end
+
+ns.Listen("ROLE_FOUND", function(guid) Remember(ns.GroupMember(guid)) end)
+ns.On("PLAYER_TALENT_UPDATE", function() Remember(ns.GroupMember(UnitGUID("player"))) end)
 
 -- Inspecting ---------------------------------------------------------------------------------------------------------
 

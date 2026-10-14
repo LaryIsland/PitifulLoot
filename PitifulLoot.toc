@@ -17,7 +17,12 @@ Capture.lua
 Rules.lua
 Serialize.lua
 Ranking.lua
+# The ledger (design document 6).
+Crypto.lua
+Pack.lua
 Ledger.lua
+LedgerFormat.lua
+Pity.lua
 Odds.lua
 Rolls.lua
 Roster.lua
