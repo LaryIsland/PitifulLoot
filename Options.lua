@@ -12,8 +12,15 @@ end
 -- What auto-roll does: nothing, roll for you in rerolls only, or in every roll you can take part in.
 ns.AUTO_ROLL = { OFF = 0, REROLLS = 1, ALL = 2 }
 
+-- The raid chat languages there are, by name.
+local chatLanguages = {}
+for code, language in pairs(ns.CHAT_LANGUAGES) do chatLanguages[#chatLanguages + 1] = { code, language.name } end
+table.sort(chatLanguages, function(a, b) return a[2] < b[2] end)
+
 ns.OPTIONS = {
 	{ section = L.OPT_SECTION_ANNOUNCEMENTS, officer = true },
+	{ key = "chatLanguage", officer = true, kind = "dropdown", name = L.OPT_CHAT_LANGUAGE, choices = chatLanguages,
+		tooltip = L.OPT_CHAT_LANGUAGE_TIP },
 	{ key = "announce", officer = true, kind = "checkbox", name = L.OPT_ANNOUNCE, tooltip = L.OPT_ANNOUNCE_TIP },
 	{ key = "whisperRefusals", officer = true, kind = "checkbox", name = L.OPT_WHISPER_REFUSALS, tooltip = L.OPT_WHISPER_REFUSALS_TIP },
 	{ key = "raidWarning", officer = true, kind = "checkbox", name = L.OPT_RAID_WARNING, tooltip = L.OPT_RAID_WARNING_TIP },

@@ -1064,14 +1064,17 @@ ns.Receive(LIVE, "pass", function(d, sender)
 	Passed(m, member.guid, d.round)
 end)
 
--- Players without the addon pass by typing exactly "pass" (any case) in raid chat (party chat in a party), or whispering
--- it to the writer; anyone else can too. Only the writer takes it, as it alone knows who can roll, and tells the group.
+-- Players without the addon pass by typing exactly "pass" (any case), or the word for it in the raid chat language, in
+-- raid chat (party chat in a party), or whispering it to the writer; anyone else can too. Only the writer takes it, as
+-- it alone knows who can roll, and tells the group.
 local CHAT_PASS = "pass"
 
 local function ChatPass(text, sender)
 	local m = live.mirror
 	if not (engine and m and ns.AmWriter() and canaccessvalue(text) and canaccessvalue(sender)) then return end
-	if type(text) ~= "string" or strtrim(text):lower() ~= CHAT_PASS then return end
+	if type(text) ~= "string" then return end
+	local said = strtrim(text):lower()
+	if said ~= CHAT_PASS and said ~= CHAT.PASS:lower() then return end
 	local member = ns.GroupMember(sender)
 	if not member or m.passed[member.guid] == m.round or not MayPass(m, member.guid, m.round) then return end
 	if m.state == "open" and not ns.MayRollOn(member.guid, m.item, m.greed) then return end

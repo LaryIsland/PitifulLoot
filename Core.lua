@@ -31,8 +31,27 @@ local DEFAULTS = {
 	tooltipHints = true, -- the lines in tooltips saying what clicking does
 	showRaidTab = false, -- a member showing the Raid tab, to look at (officers always have it)
 	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
+	chatLanguage = "enUS", -- the writer's raid chat and whispers (ns.CHAT_LANGUAGES), whatever the game's language
 }
 ns.DEFAULTS = DEFAULTS
+
+-- Raid chat and whispers, in the language the writer picked (ns.CHAT_LANGUAGES, from Locales), which needn't be the
+-- game's: a line the language hasn't translated is in English, and one English hasn't got shows as its own name, with
+-- an error, as for L.
+local english = ns.CHAT_LANGUAGES.enUS.text
+local missingChat = {}
+ns.CHAT = setmetatable({}, {
+	__index = function(_, key)
+		local chosen = ns.settings and ns.CHAT_LANGUAGES[ns.settings.chatLanguage]
+		local text = chosen and chosen.text[key] or english[key]
+		if text then return text end
+		if not missingChat[key] then
+			missingChat[key] = true
+			geterrorhandler()("PitifulLoot: missing chat text '" .. tostring(key) .. "'")
+		end
+		return key
+	end,
+})
 
 -- Events too frequent or uninteresting to capture; addon messages are captured decoded, in Comm.lua.
 local UNCAPTURED = { CHAT_MSG_ADDON = true, GET_ITEM_INFO_RECEIVED = true }

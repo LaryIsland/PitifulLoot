@@ -217,6 +217,8 @@ L["OPT_SECTION_PROFILE"] = "Profile"
 
 L["OPT_ANNOUNCE"] = "Announce in Raid Chat"
 L["OPT_ANNOUNCE_TIP"] = "As the writer, post roll starts, ties, and results, to raid chat."
+L["OPT_CHAT_LANGUAGE"] = "Chat Language"
+L["OPT_CHAT_LANGUAGE_TIP"] = "The language for raid chat and whispers."
 L["OPT_WHISPER_REFUSALS"] = "Whisper Refused Rolls"
 L["OPT_WHISPER_REFUSALS_TIP"] = "As the writer, whisper players without the addon when their roll didn't count, once per roll."
 L["OPT_RAID_WARNING"] = "Use Raid Warnings"
@@ -524,9 +526,13 @@ ns.L = LibStub("AceLocale-3.0"):GetLocale("PitifulLoot")
 -- Raid chat and whispers -------------------------------------------------------------------------------------------
 
 -- What the writer posts to the group, and whispers to players without the addon. Everyone in the raid reads these,
--- so they stay in English whatever language the writer's game is in; a Chat Language option can offer translations
--- of this table once there are some.
+-- so they're in the language the writer picks for raid chat (Chat Language, an officer option), whatever language
+-- their game is in: English, or any translation (each its own file, adding itself to ns.CHAT_LANGUAGES as below
+-- whatever the game's language). A line a translation leaves out is in English.
 local CHAT = {
+	-- The word a player without the addon types in raid chat, or whispers to the writer, to pass ("pass" in English
+	-- always works too).
+	PASS = "pass",
 	-- A roll starting, and its last call.
 	ROLL_START = "%s: /roll now (%ds)",
 	GREED_ROLL_START = "Greed roll for %s: /roll now (%ds)",
@@ -570,11 +576,6 @@ local CHAT = {
 	WHY_NOPITY = "no pity given",
 }
 
--- A name with no text shows as itself, with an error, as for L.
-ns.CHAT = setmetatable(CHAT, {
-	__index = function(self, key)
-		rawset(self, key, key)
-		geterrorhandler()("PitifulLoot: missing chat text '" .. tostring(key) .. "'")
-		return key
-	end,
-})
+-- Each raid chat language: its name, in itself, for the option, and its lines. Core.lua makes ns.CHAT of them.
+ns.CHAT_LANGUAGES = ns.CHAT_LANGUAGES or {}
+ns.CHAT_LANGUAGES.enUS = { name = "English", text = CHAT }
