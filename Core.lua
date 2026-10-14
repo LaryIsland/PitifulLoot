@@ -118,6 +118,8 @@ end
 ---@field classes table<string, string> class file names by GUID, to colour those names
 ---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
 ---@field testMode boolean?
+---@field introduced table<string, number> when each player without the addon was last whispered about it (Session.lua)
+---@field perf table[]? the latest performance test runs (Perf.lua, development only)
 ---@field tutorialFinished boolean? every step on one of the test menu's pages has been done (TestMenu.lua)
 ---@field tutorialTold boolean? told, after finishing it, that /pl test opens the test menu again
 ---@field minimapIcon table LibDBIcon's record of the minimap button: where it sits, and whether it's hidden

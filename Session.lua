@@ -35,6 +35,9 @@ local LATE_GRACE = 10 -- seconds after a roll is decided that late /rolls are st
 local AUTO_ROLL_DELAY = 5 -- seconds auto-roll waits in a new roll, so there's time to pass
 local CLOSING_WARNING = 5 -- seconds before a roll closes that raid chat is told, for players without the addon
 local TIE_QUIET = 1.5 -- seconds a tie waits before raid chat hears of it, so instant rerolls don't fill raid chat
+local EARLY_END = 1 -- seconds the opening round waits once everyone who can roll has, before it ends early
+local INTRO_WAIT = 10 -- seconds the writer gives a player's addon to answer before taking it they haven't got one
+local INTRO_AGAIN = 12 * 60 * 60 -- seconds before a player without the addon is whispered about it again: once a night
 
 local live = { observed = {} }
 ns.live = live
@@ -44,7 +47,7 @@ local closeTimer
 local pending, pendingRound, flushing = {}, nil, false
 local count = 0
 local queried = false
-local autoRollTimer, warnTimer, tieTimer
+local autoRollTimer, warnTimer, tieTimer, earlyTimer
 local rolesSent -- the roles the writer last told the group, serialized
 -- Players the writer knows have the addon (by GUID), who aren't whispered when a roll doesn't count: their window
 -- says why (ns.MyRefusal).
@@ -504,7 +507,8 @@ local function StopWriting()
 	if closeTimer then closeTimer:Cancel() end
 	if warnTimer then warnTimer:Cancel() end
 	if tieTimer then tieTimer:Cancel() end
-	closeTimer, warnTimer, tieTimer = nil, nil, nil
+	if earlyTimer then earlyTimer:Cancel() end
+	closeTimer, warnTimer, tieTimer, earlyTimer = nil, nil, nil, nil
 	pending, pendingRound = {}, nil
 end
 
@@ -516,14 +520,45 @@ local function ScheduleClose(secs)
 	end)
 end
 
--- A reroll ends as soon as every tied player has rolled again or passed.
-local function CloseIfAllRerolled(m)
-	if m.state ~= "reroll" then return end
-	for contender in pairs(m.contenders) do
-		if not (m.rounds[m.round] and m.rounds[m.round][contender]) and m.passed[contender] ~= m.round then return end
+-- Whether everyone in the group who can roll in the opening round has rolled or passed, and someone has. Players who
+-- are offline don't count; players without the addon do, as they can only roll, so until they do the round runs its
+-- time.
+local function EveryoneHasRolled(m)
+	local rolled = m.rounds[1] or {}
+	if not (next(rolled) or next(m.passed)) then return false end
+	for _, member in ipairs(ns.GroupMembers()) do
+		local id = member.guid
+		if not rolled[id] and m.passed[id] ~= 1 and UnitIsConnected(member.unit)
+			and ns.MayRollOn(id, m.item, m.greed) then
+			return false
+		end
 	end
-	ns.CloseRound()
+	return true
 end
+
+-- A reroll ends as soon as every tied player has rolled again or passed; the opening round a moment after everyone
+-- who can roll has, or passed.
+local function CloseIfAllDone(m)
+	if m.state == "reroll" then
+		for contender in pairs(m.contenders) do
+			if not (m.rounds[m.round] and m.rounds[m.round][contender]) and m.passed[contender] ~= m.round then return end
+		end
+		return ns.CloseRound()
+	end
+	if m.state ~= "open" or earlyTimer or not EveryoneHasRolled(m) then return end
+	earlyTimer = C_Timer.NewTimer(EARLY_END, function()
+		earlyTimer = nil
+		if live.mirror == m and m.state == "open" and EveryoneHasRolled(m) then ns.CloseRound() end
+	end)
+end
+
+-- Someone who hadn't rolled leaving the group, or going offline, can leave everyone else done.
+local function RecheckDone()
+	local m = live.mirror
+	if engine and m and ns.AmWriter() then CloseIfAllDone(m) end
+end
+ns.Listen("ROSTER_CHANGED", RecheckDone)
+ns.On("UNIT_CONNECTION", RecheckDone)
 
 -- Tells a player without the addon why their roll didn't count, once per roll, by whisper (5.3). Players with it,
 -- the writer included, see why on their own row on the Roll tab instead (ns.MyRefusal). In test mode on your own,
@@ -574,7 +609,7 @@ local function WriterRoll(name, roll, low, high)
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
 	if not ok then return Refuse(why) end
 	QueueRoll({ id = id, name = member.name, roll = roll, pity = pity, os = offSpec or nil, unknown = guessed or nil })
-	CloseIfAllRerolled(m)
+	CloseIfAllDone(m)
 end
 
 -- Every /roll during a roll: the writer counts it, everyone else notes it to check the writer's result against.
@@ -599,14 +634,57 @@ ns.On("CHAT_MSG_SYSTEM", function(message)
 	if ns.AmWriter() then WriterRoll(name, roll, low, high) end
 end)
 
+-- Players without the addon are whispered, once a night, that the raid uses it and that they can /roll or pass (5.3).
+-- Every client with the addon answers a new writer, or asks the writer what's on as it joins, so anyone in the group
+-- who hasn't been heard from INTRO_WAIT seconds after the writer takes charge, or after they join, has none. Test mode
+-- on your own whispers nobody, as it sends nothing.
+local introTimer
+
+local function Introduced()
+	local told = ns.saved.introduced or {}
+	ns.saved.introduced = told
+	local now = GetServerTime()
+	for id, at in pairs(told) do
+		if now - at > INTRO_AGAIN then told[id] = nil end
+	end
+	return told, now
+end
+
+local function Introduce()
+	introTimer = nil
+	if not ns.AmWriter() or not IsInGroup() or ns.TestIsPrivate() then return end
+	local told, now = Introduced()
+	local me = UnitGUID("player")
+	for _, member in ipairs(ns.GroupMembers()) do
+		local id = member.guid
+		if id ~= me and not users[id] and not told[id] and UnitIsConnected(member.unit) then
+			told[id] = now
+			ns.Capture("whisper", member.name, CHAT.INTRO)
+			ChatThrottleLib:SendChatMessage("NORMAL", ns.PREFIX_LIVE, CHAT.INTRO, "WHISPER", nil, member.name)
+		end
+	end
+end
+
+local function IntroduceSoon()
+	if introTimer or not ns.AmWriter() then return end
+	introTimer = C_Timer.NewTimer(INTRO_WAIT, Introduce)
+end
+ns.Listen("ROSTER_CHANGED", IntroduceSoon)
+
 -- Takes the writer role (6.2), and takes over a roll already in progress from the mirror.
 function ns.ClaimWriter()
 	if not IsInGroup() and not ns.IsTestMode() then return ns.Print(L.MSG_NEED_GROUP) end
 	if not ns.IsOfficer(ns.PlayerName()) then return ns.Print(L.MSG_WRITER_OFFICERS) end
 	if not ns.ledger then return ns.Print(L.MSG_LEDGER_NOT_LOADED) end
+	-- Taking over from another writer: the players here were whispered by them, if they needed to be.
+	if live.writer and live.writer ~= ns.PlayerName() then
+		local told, now = Introduced()
+		for _, member in ipairs(ns.GroupMembers()) do told[member.guid] = told[member.guid] or now end
+	end
 	live.writer = ns.PlayerName()
 	ns.MergeChanges()
 	SendLive("writer", {})
+	IntroduceSoon()
 	local m = live.mirror
 	if m and (IsActive(m) or m.state == "decided") then
 		engine = Rebuild(m, m.state == "decided")
@@ -713,7 +791,8 @@ function ns.CloseRound()
 	local m = live.mirror
 	if not ns.AmWriter() or not engine or not IsActive(m) then return end
 	if closeTimer then closeTimer:Cancel() end
-	closeTimer = nil
+	if earlyTimer then earlyTimer:Cancel() end
+	closeTimer, earlyTimer = nil, nil
 	Flush()
 	local result, tied = engine:CloseRound()
 	if result == "reroll" then
@@ -946,16 +1025,21 @@ function ns.Roll()
 	ns.Fire("SESSION_CHANGED")
 end
 
+-- Whether a player can pass in this round: it's on, they haven't rolled in it, and in a reroll they're tied.
+local function MayPass(m, id, round)
+	if not IsActive(m) or round ~= m.round or (m.rounds[m.round] and m.rounds[m.round][id]) then return false end
+	return m.state ~= "reroll" or m.contenders[id] == true
+end
+
 -- Passing: you won't roll in this round. It changes nothing in the ledger (not rolling never does, 4.1), but it takes
--- you out of everyone's odds, ends a reroll sooner, and stops auto-roll. A /roll afterwards still counts.
+-- you out of everyone's odds, ends the round sooner, and stops auto-roll. A /roll afterwards still counts.
 local function Passed(m, id, round)
-	if not IsActive(m) or round ~= m.round or (m.rounds[m.round] and m.rounds[m.round][id]) then return end
-	if m.state == "reroll" and not m.contenders[id] then return end
+	if not MayPass(m, id, round) then return end
 	m.passed[id] = round
 	if id == UnitGUID("player") then StopAutoRoll(m) end
 	RefreshOdds()
 	ns.Fire("SESSION_CHANGED")
-	if ns.AmWriter() then CloseIfAllRerolled(m) end
+	if ns.AmWriter() then CloseIfAllDone(m) end
 end
 
 function ns.Pass()
@@ -972,6 +1056,31 @@ ns.Receive(LIVE, "pass", function(d, sender)
 	Passed(m, member.guid, d.round)
 end)
 
+-- Players without the addon pass by typing exactly "pass" (any case) in raid chat (party chat in a party), or whispering
+-- it to the writer; anyone else can too. Only the writer takes it, as it alone knows who can roll, and tells the group.
+local CHAT_PASS = "pass"
+
+local function ChatPass(text, sender)
+	local m = live.mirror
+	if not (engine and m and ns.AmWriter() and canaccessvalue(text) and canaccessvalue(sender)) then return end
+	if type(text) ~= "string" or strtrim(text):lower() ~= CHAT_PASS then return end
+	local member = ns.GroupMember(sender)
+	if not member or m.passed[member.guid] == m.round or not MayPass(m, member.guid, m.round) then return end
+	if m.state == "open" and not ns.MayRollOn(member.guid, m.item, m.greed) then return end
+	SendLive("passed", { sid = m.sid, round = m.round, id = member.guid })
+	Passed(m, member.guid, m.round)
+end
+for _, event in ipairs({ "CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER", "CHAT_MSG_PARTY", "CHAT_MSG_PARTY_LEADER",
+	"CHAT_MSG_WHISPER" }) do
+	ns.On(event, ChatPass)
+end
+
+ns.Receive(LIVE, "passed", function(d, sender)
+	local m = live.mirror
+	if type(d) ~= "table" or not m or d.sid ~= m.sid or type(d.id) ~= "string" or type(d.round) ~= "number" then return end
+	if live.writer and ns.SameName(sender, live.writer) then Passed(m, d.id, d.round) end
+end)
+
 -- For the test commands: counts a roll from a made-up player, as if the writer had seen their /roll. `unknown`: the
 -- off-spec flag comes from a fallback role.
 function ns.CountTestRoll(id, name, roll, pity, offSpec, unknown)
@@ -981,7 +1090,7 @@ function ns.CountTestRoll(id, name, roll, pity, offSpec, unknown)
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
 	if not ok then return false, why end
 	QueueRoll({ id = id, name = name, roll = roll, pity = pity, os = offSpec or nil, unknown = unknown or nil })
-	CloseIfAllRerolled(m)
+	CloseIfAllDone(m)
 	return true
 end
 

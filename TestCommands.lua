@@ -1100,8 +1100,23 @@ local function SetRaiderPage(on)
 	ns.Fire("SESSION_CHANGED")
 end
 
+-- Runs fn with a quiet made-up raid of `count` in place of the current one, then puts the current one back (for the
+-- performance tests, Perf.lua). Returns whether it ran: only in test mode.
+local function WithRaid(count, fn)
+	if not ns.IsTestMode() then return false end
+	local was, wasSwept, wasSweep = raiders, swept, fakeSweep
+	FillRaid(count, false, false, true)
+	local ok, err = pcall(fn)
+	raiders, swept, fakeSweep = was, wasSwept, wasSweep
+	for _, raider in ipairs(raiders or {}) do ns.RememberName(raider.guid, raider.name, raider.class) end
+	ns.Fire("ROSTER_CHANGED")
+	if not ok then error(err, 0) end
+	return true
+end
+
 -- What the test menu (TestMenu.lua) uses.
 ns.Test = {
+	WithRaid = WithRaid,
 	On = test.on, Off = test.off, Reset = test.reset, ToggleRaider = test.raider,
 	FillRaid = function(count) if InTestMode() then FillRaid(count, false, true) end end,
 	RAID_MIN = TUTORIAL_RAID_MIN,

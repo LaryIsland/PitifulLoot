@@ -544,6 +544,8 @@ local CHAT = {
 	-- The writer.
 	RUNNING_ROLLS = "%s is running loot rolls.",
 	TAKEN_OVER = "%s has taken over the roll for %s.",
+	-- The whisper to a player without the addon, once a night, saying the raid uses it and how to take part.
+	INTRO = "This raid is using Pitiful Loot. Type /roll or pass when an item roll starts.",
 	-- The whisper to a player without the addon whose roll didn't count, and why.
 	REFUSED = "Your roll for %s didn't count: %s.",
 	REFUSED_RANGE_HINT = "Type /roll 100 instead.",

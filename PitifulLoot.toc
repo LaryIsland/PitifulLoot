@@ -40,3 +40,7 @@ Commands.lua
 # Test mode and the test menu, a tutorial (its debugging commands are temporary; design document 5.5).
 TestCommands.lua
 TestMenu.lua
+#@do-not-package@
+# The performance tests (/pl perf), for development only.
+Perf.lua
+#@end-do-not-package@
