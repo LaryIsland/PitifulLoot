@@ -311,13 +311,20 @@ function Ledger:Stamp(time)
 end
 
 -- Makes the changes so far a new revision by the officer `by` at `time`: changed sub-rows are stamped with `time`, and
--- the head gets the table's new hash.
+-- the head's hash is due to be worked out again (Ledger:Hash).
 function Ledger:Commit(by, time)
 	self:Stamp(time)
 	local head = self.data.head
-	head.rev, head.by = head.rev + 1, by
-	head.hash = ns.TableHash(self)
+	head.rev, head.by, head.hash = head.rev + 1, by, ""
 	return head.rev
+end
+
+-- The table's hash (6.1), worked out when something asks for it (sending the whole table, /pl status) rather than on
+-- every change: on a big table it takes several frames' worth of time (/pl perf), and nothing else reads it.
+function Ledger:Hash()
+	local head = self.data.head
+	if #head.hash ~= 16 then head.hash = ns.TableHash(self) end
+	return head.hash
 end
 
 -- Changes (6.4) -------------------------------------------------------------------------------------------------------
@@ -377,14 +384,14 @@ function Ledger:ApplyDiff(d, only)
 	return self:Stamp(d.time)
 end
 
--- The head (6.1): revision, who made the latest change, and the table's hash. The revision counts every change ever
--- applied: the base's, plus the changes since.
+-- The head (6.1): revision, who made the latest change, and the table's hash (due to be worked out again, Ledger:Hash).
+-- The revision counts every change ever applied: the base's, plus the changes since.
 function Ledger:UpdateHead()
 	local diffs, base = self.data.diffs or {}, self.data.baseHead or { rev = 0, by = "" }
 	local head = self.data.head
 	head.rev = base.rev + #diffs
 	head.by = diffs[#diffs] and diffs[#diffs].by or base.by
-	head.hash = ns.TableHash(self)
+	head.hash = ""
 end
 
 -- Rebuilds the table from the base and every change since, in order: for a change that arrived out of order, or a new
@@ -473,8 +480,7 @@ function Ledger:Merge(by, time, keys)
 	local base = self.data.baseHead or { rev = 0, by = "" }
 	self.data.baseHead = { rev = base.rev + #merging + 1, by = by }
 	self.data.diffs = {}
-	self.data.head.rev, self.data.head.by = self.data.baseHead.rev, by
-	self.data.head.hash = ns.TableHash(self)
+	self.data.head.rev, self.data.head.by, self.data.head.hash = self.data.baseHead.rev, by, ""
 	self.data.base = ns.PackTable(self)
 	if keep[1] then
 		self.data.diffs = keep

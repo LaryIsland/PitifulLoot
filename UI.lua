@@ -122,6 +122,7 @@ local CANT_ROLL = {
 	nottied = { L.CANT_ROLL_NOT_TIED, L.CANT_ROLL_NOT_TIED_TIP },
 	won = { L.CANT_ROLL_WON, L.CANT_ROLL_WON_TIP },
 	class = { L.CANT_ROLL_CLASS, L.CANT_ROLL_CLASS_TIP },
+	notforclass = { L.CANT_ROLL_NOT_FOR_CLASS, L.CANT_ROLL_NOT_FOR_CLASS_TIP },
 }
 
 -- A /roll of yours the writer didn't count, on your own row the same way, saying why: in place of its details when
@@ -479,7 +480,7 @@ local function LootLines()
 			local setRoles = AsOfficer() and not ns.ForEveryone(item)
 			if canRoll or greed or setRoles then
 				hints = {}
-				if canRoll then hints[#hints + 1] = L.HINT_START_ROLL end
+				if canRoll then hints[#hints + 1] = ns.NeedViable(item) and L.HINT_START_ROLL or L.HINT_START_GREED end
 				if greed and setRoles then
 					hints[#hints + 1] = L.HINT_GREED_OR_ROLES
 				elseif greed then
@@ -984,7 +985,7 @@ local function UpdateButtons()
 		label, action = L.BUTTON_AWARD, ns.Award
 	elseif writer and decided and not m.greed and ns.IsBoE(m.item) then
 		label, action = L.BUTTON_GREED_ROLL, function() ns.StartRoll(m.item, m.copies, true) end
-	elseif writer and decided and m.greed then
+	elseif writer and decided and m.greed and ns.IsBoE(m.item) then
 		label, action = L.BUTTON_KEEP, ns.KeepToSell
 	elseif writer and decided and not ns.IsBoE(m.item) then
 		label, action = L.BUTTON_DISENCHANT, ns.Disenchant
@@ -1290,7 +1291,7 @@ local function ShowRaiderTooltip(owner, member)
 	GameTooltip_SetTitle(GameTooltip, ns.ColoredName(member.guid, member.name))
 	local role, source, by = ns.RoleInfo(member.guid)
 	local reasonKey, busy = ns.RoleReason(member.guid), ns.IsInspecting(member.guid)
-	if (source == "officer" or source == "known") and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
+	if (source == "officer" or source == "known" or source == "gear") and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
 	local reason = ns.UNKNOWN_REASONS[reasonKey or ""]
 	if busy then
 		GameTooltip_AddColoredLine(GameTooltip, InspectingText(), UNCHECKED_COLOR)

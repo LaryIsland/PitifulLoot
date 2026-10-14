@@ -130,7 +130,8 @@ end
 local extraTrials = 0
 local function Odds(pool, copies)
 	extraTrials = extraTrials + 1
-	ns.Odds(pool, copies, (#pool > 20 and 5000 or 10000) + extraTrials) -- Odds.lua's trials for the pool's size
+	-- Odds.lua's trials for the pool's size, and for several copies
+	ns.Odds(pool, copies, (copies > 1 and 2500 or #pool > 20 and 5000 or 10000) + extraTrials)
 end
 
 local SPREAD = "spread over frames in play" -- the odds: Odds.lua works them out a little each frame
@@ -183,7 +184,7 @@ local function Tests(data)
 		},
 		{ name = "Read a week's changes", run = function() ns.Decode(ns.ReadDiffs, data.diffBytes) end },
 		{
-			name = "Take a new change (applied, table hashed)",
+			name = "Take a new change (the hash waits until asked for)",
 			each = function() return ns.NewLedger(ns.Decode(ns.ReadTable, data.packed)) end,
 			run = function(copy) copy:AddDiff(newChange) end,
 		},
@@ -200,6 +201,26 @@ local function Tests(data)
 		{ name = "Odds, 20 players, 1 copy", run = function() Odds(Pool(20), 1) end, note = SPREAD },
 		{ name = "Odds, 40 players, 1 copy", run = function() Odds(Pool(40), 1) end, note = SPREAD },
 		{ name = "Odds, 40 players, 2 copies", run = function() Odds(Pool(40), 2) end, note = SPREAD },
+		-- Everyday work: your own role (the window keeps it for a frame; this is a fresh read each time), and whether
+		-- each raider can need-roll on an item, as the Roll tab and the early end ask.
+		{ name = "Read your talents", run = function() ns.ReadTalents() end },
+		{
+			name = "Read your gear's fit (every item worn)",
+			run = function()
+				local _, class = UnitClass("player")
+				ns.GearFits("player", class, { TANK = true, HEALER = true, DAMAGER = true })
+			end,
+		},
+		{
+			name = "Can each of 40 raiders need-roll on an item",
+			skip = not ns.IsTestMode() and "needs test mode, for a made-up raid"
+				or not GetInventoryItemID("player", 5) and "needs a chest piece on" or nil,
+			around = function(measure) ns.Test.WithRaid(40, measure) end,
+			run = function()
+				local item = GetInventoryItemID("player", 5)
+				for _, member in ipairs(ns.GroupMembers()) do ns.MayRollOn(member.guid, item) end
+			end,
+		},
 		{
 			name = "Redraw the Raid tab, 40 players",
 			skip = not ns.IsTestMode() and "needs test mode, for a made-up raid" or nil,
@@ -264,8 +285,8 @@ end
 local function ResultText(run)
 	local lines = {
 		("Pitiful Loot performance, %s, client %s, addon %s"):format(run.when, run.client, run.version),
-		("Made-up ledger: %d players with pity, %d sub-rows, %d weeks of results; a frame at 60 fps is %s ms"):format(
-			run.players, run.subRows, WEEKS, Ms(FRAME)),
+		("Made-up ledger: %d players with pity, %d sub-rows, %d weeks of results; a frame at 60 fps is %s ms; SHA-256 %s"):format(
+			run.players, run.subRows, WEEKS, Ms(FRAME), run.crypto or "?"),
 		"test | median ms | mean ms | slowest ms | runs | KB a run | note",
 	}
 	for _, r in ipairs(run.results) do
@@ -294,6 +315,7 @@ local function Run()
 		when = date("%Y-%m-%d %H:%M:%S"), client = ("%s (%s)"):format(version, build),
 		version = C_AddOns.GetAddOnMetadata(addonName, "Version") or "?", players = data.players,
 		subRows = data.subRows, made = made, results = {},
+		crypto = ns.CRYPTO_FAST and "with three-argument bit calls" or "with two-argument bit calls",
 	}
 	local tests, i = Tests(data), 0
 	local function Next()

@@ -2,6 +2,7 @@ local _, ns = ...
 
 local TRIALS = 10000
 local LARGE_POOL, LARGE_POOL_TRIALS = 20, 5000 -- big pools (a 40-player raid) settle on fewer trials; still within ~1%
+local COPIES_TRIALS = 2500 -- several copies take far longer a trial; within ~1.5%, and shown in half the time (/pl perf)
 local TRIALS_PER_FRAME = 1000 -- at most, per frame
 local FRAME_BUDGET = 2 -- milliseconds a frame may spend on odds; it yields sooner if a frame's share takes longer
 local CHECK_EVERY = 25 -- trials between looks at the clock
@@ -71,19 +72,73 @@ local function SingleWinner(players, random)
 	end
 end
 
--- One trial for several copies, through the real ranking. Adds each winner's bonus to wins.
-local function SeveralWinners(players, copies, random, wins)
-	local contenders, slots = players, copies
-	while true do
-		for _, c in ipairs(contenders) do c.roll = random(ns.ROLL_MAX) end
-		local winners, tied, left = ns.RankRound(contenders, slots)
-		for _, id in ipairs(winners) do
-			local bonus = players[id].bonus
+-- One trial for several copies, ranked exactly as ns.RankRound ranks rounds (copies go from the top down; a group tied
+-- across the last copy left rolls off for the copies left, unless they all have the same bonus, when their raw rolls
+-- decide it, with any tie there rolling off), and with the same rolls drawn in the same order, so it gives the same
+-- odds. Like SingleWinner it builds no tables: ns.RankRound's did, thousands of times over, which made a 40-player
+-- calculation for two copies leave 100 MB for the game to collect. Adds each winner's bonus to wins.
+local order, values, rolls = {}, {}, {} -- the players still in, by index; and each one's effective and raw roll
+local function ByValue(a, b)
+	if values[a] ~= values[b] then return values[a] > values[b] end
+	return a < b
+end
+local function ByRoll(a, b)
+	if rolls[a] ~= rolls[b] then return rolls[a] > rolls[b] end
+	return a < b
+end
+
+-- Gives `slots` copies out from the top of order[1..count], sorted on `key`. Returns the copies left, and the size of
+-- a group tied across the last of them (0 if none), which is left at the front of order, the rest cleared.
+local function Give(players, count, slots, key, wins)
+	local i = 1
+	while i <= count and slots > 0 do
+		local j = i
+		while j < count and key[order[j + 1]] == key[order[i]] do j = j + 1 end
+		local size = j - i + 1
+		if size > slots then
+			for k = 1, size do order[k] = order[i + k - 1] end
+			for k = size + 1, count do order[k] = nil end
+			return slots, size
+		end
+		for k = i, j do
+			local bonus = players[order[k]].bonus
 			wins[bonus] = (wins[bonus] or 0) + 1
 		end
-		if not tied then return end
-		contenders, slots = {}, left
-		for i, id in ipairs(tied) do contenders[i] = players[id] end
+		slots = slots - size
+		i = j + 1
+	end
+	return slots, 0
+end
+
+local function SeveralWinners(players, copies, random, wins)
+	local count, slots = #players, copies
+	for k = 1, count do order[k] = k end
+	for k = count + 1, #order do order[k] = nil end
+	while true do
+		-- Those still in are in index order here, as the real ranking's would be, so the rolls are drawn alike.
+		for k = 1, count do
+			local p = order[k]
+			local roll = random(ns.ROLL_MAX)
+			rolls[p], values[p] = roll, ns.EffectiveRoll(roll, players[p].bonus)
+		end
+		table.sort(order, ByValue)
+		local size
+		slots, size = Give(players, count, slots, values, wins)
+		if size == 0 then return end
+		count = size
+		local same = true
+		for k = 2, count do
+			if players[order[k]].bonus ~= players[order[1]].bonus then
+				same = false
+				break
+			end
+		end
+		if same then
+			table.sort(order, ByRoll)
+			slots, size = Give(players, count, slots, rolls, wins)
+			if size == 0 then return end
+			count = size
+		end
 	end
 end
 
@@ -146,12 +201,13 @@ end
 -- Each player's chance of winning one of `copies` copies (5.2), from who is in the pool and their pity alone, never
 -- from rolls already made. pool: array of { id = guid, pity = n, offSpec = bool }. Approximate: it plays the roll out
 -- `trials` times with the same ranking and rerolls as the real one. Players with the same bonus share a figure.
-local function TrialsFor(pool)
+local function TrialsFor(pool, copies)
+	if (copies or 1) > 1 then return COPIES_TRIALS end
 	return #pool > LARGE_POOL and LARGE_POOL_TRIALS or TRIALS
 end
 
 function ns.Odds(pool, copies, trials)
-	return Calculate(pool, copies or 1, trials or TrialsFor(pool), false)
+	return Calculate(pool, copies or 1, trials or TrialsFor(pool, copies), false)
 end
 
 local job
@@ -163,7 +219,7 @@ function ns.OddsLater(pool, copies, callback)
 	job = mine
 	local function Step()
 		if job ~= mine then return end
-		local ok, chances = coroutine.resume(mine, pool, copies or 1, TrialsFor(pool), true)
+		local ok, chances = coroutine.resume(mine, pool, copies or 1, TrialsFor(pool, copies), true)
 		if not ok then
 			job = nil
 			error(chances)

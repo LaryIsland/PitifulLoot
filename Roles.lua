@@ -13,12 +13,13 @@ local CLASS_ROLES = {
 	DRUID = { TANK = true, HEALER = true, DAMAGER = true },
 	MAGE = { DAMAGER = true }, WARLOCK = { DAMAGER = true }, ROGUE = { DAMAGER = true }, HUNTER = { DAMAGER = true },
 }
+ns.CLASS_ROLES = CLASS_ROLES
 
 -- The role each class's capstone means (the level 40 talent, its tree's last node), by the tree's place in the talent
 -- window. Only one capstone can be known at a time. The capstone is found by its place, at the foot of its tree, never
 -- by name, as names are in the client's own language. Berserk druids and Rage of the Farseer shamans may tank or do
--- damage, so their capstone narrows it to those two and an officer says which (their defense or stamina might tell,
--- later). To be tuned: some paladins with Light's Vigil do damage.
+-- damage, so their capstone narrows it to those two, and their gear says which (GearRole), or an officer does. A
+-- capstone that settles a role on its own is final, whatever the gear.
 local TANK_OR_DAMAGE = { TANK = true, DAMAGER = true }
 local CAPSTONES = {
 	DRUID = { "DAMAGER", TANK_OR_DAMAGE, "HEALER" }, -- Moonkin Form, Berserk, Wild Growth
@@ -43,12 +44,12 @@ function ns.FallbackRole(class, reason)
 end
 
 -- Where a role came from, with what the Raid tab's tooltips say about it. A role that's certain (from talents, or a
--- class with one role) says nothing; one worked out from talents and gear together, when that's added, will say
--- "Found from talents/gear", as it isn't.
+-- class with one role) says nothing; one worked out from talents and gear together says so, as it isn't.
 ns.ROLE_SOURCES = {
 	officer = L.ROLE_SOURCE_OFFICER,
 	raid = L.ROLE_SOURCE_RAID,
 	known = L.ROLE_SOURCE_KNOWN, -- their last known role, as their talents are ambiguous
+	gear = L.ROLE_SOURCE_GEAR, -- their talents are ambiguous, and their gear says which
 	talents = false, -- told by their own client
 	inspect = false, -- read by inspecting them
 }
@@ -84,13 +85,14 @@ local function EntryName(configID, entryID)
 	if canaccessvalue(name) then return name end
 end
 
--- A talent config's talents: `taken`, the names of those taken, as a set (for the probe); `read`, how many nodes could
--- be read; and
--- `trees`, each talent tree in order with its last node (`capstone`, by name) and whether that's taken, if the trees
--- can be told apart. Nil if nothing could be read. Forever's talents are trait trees, its three talent trees being
+-- A talent config's talents: `read`, how many nodes could be read; `trees`, each talent tree in order with whether
+-- its last node is taken, if the trees can be told apart; and with `names` (for the probe), `taken`, the names of the
+-- talents taken, as a set, and each tree's `capstone` by name. Looking names up is most of the garbage a read leaves
+-- (/pl perf), and roles go by place, never by name, so they're only looked up for the probe. Nil if nothing could be
+-- read. Forever's talents are trait trees, its three talent trees being
 -- groups in one, so they're read node by node as its own talent window does. The player's own config is their
 -- active spec's (C_ClassTalents.GetActiveConfigID); INSPECT_CONFIG is an inspected player's.
-local function ReadTalents(configID)
+local function ReadTalents(configID, names)
 	local config = configID and C_Traits.GetConfigInfo(configID)
 	local treeID = config and config.treeIDs and config.treeIDs[1]
 	if not treeID then return nil end
@@ -108,7 +110,7 @@ local function ReadTalents(configID)
 		if canaccessvalue(rank) and canaccessvalue(y) and node.ID and node.ID ~= 0 then
 			talents.read = talents.read + 1
 			local taken = (rank or 0) > 0
-			if taken then
+			if taken and names then
 				local name = EntryName(configID, node.activeEntry and node.activeEntry.entryID)
 				if name then talents.taken[name] = true end
 			end
@@ -125,16 +127,19 @@ local function ReadTalents(configID)
 	if talents.read == 0 then return nil end
 	for _, tree in ipairs(trees) do
 		if not tree.node then return talents end -- a tree with no nodes: the trees can't be told apart
-		local entryID = tree.node.activeEntry and tree.node.activeEntry.entryID or (tree.node.entryIDs or {})[1]
-		tree.capstone, tree.y, tree.node = EntryName(configID, entryID), nil, nil
+		if names then
+			local entryID = tree.node.activeEntry and tree.node.activeEntry.entryID or (tree.node.entryIDs or {})[1]
+			tree.capstone = EntryName(configID, entryID)
+		end
+		tree.y, tree.node = nil, nil
 	end
 	if trees[1] then talents.trees = trees end
 	return talents
 end
 
--- The player's own talents, or an inspected player's (also for the probe in TestCommands.lua).
-function ns.ReadTalents(inspect)
-	local ok, talents = pcall(ReadTalents, inspect and INSPECT_CONFIG or C_ClassTalents.GetActiveConfigID())
+-- The player's own talents, or an inspected player's; with `names` for the probe in TestCommands.lua.
+function ns.ReadTalents(inspect, names)
+	local ok, talents = pcall(ReadTalents, inspect and INSPECT_CONFIG or C_ClassTalents.GetActiveConfigID(), names)
 	if ok then return talents end
 end
 
@@ -154,14 +159,62 @@ local function TalentRole(class, talents)
 	return nil, "nocapstone"
 end
 
+-- The player's own role and gear's say are asked for several times a redraw (the Raid tab, the roles the writer
+-- sends), and each means reading the whole talent tree, or every item worn: the answer is kept for the rest of the
+-- frame, and forgotten at once when the talents or gear change.
+local mine -- { at = GetTime(), role, why, gear }
+local function ForgetMine() mine = nil end
+for _, event in ipairs({ "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
+	"PLAYER_EQUIPMENT_CHANGED", "PLAYER_ENTERING_WORLD", "GET_ITEM_INFO_RECEIVED" }) do
+	ns.On(event, ForgetMine)
+end
+local function Mine()
+	local now = GetTime()
+	if not mine or mine.at ~= now then mine = { at = now } end
+	return mine
+end
+
 -- The player's role as their talents suggest, for a class that can fill more than one; nil until the client has
 -- their talents. Without one, nil and why (a key of ns.UNKNOWN_REASONS).
-function ns.MyRole()
+local function ReadMyRole()
 	local _, class = UnitClass("player")
 	if not CAPSTONES[class] or not C_SpecializationInfo.IsInitialized() then return nil end
 	local talents = ns.ReadTalents()
 	if talents then return TalentRole(class, talents) end
 	return nil, "unreadable"
+end
+
+function ns.MyRole()
+	local kept = Mine()
+	if not kept.read then
+		local role, why = ReadMyRole()
+		kept.role, kept.why, kept.read = role, why, true
+	end
+	return kept.role, kept.why
+end
+
+-- Gear ----------------------------------------------------------------------------------------------------------------
+
+-- The role a raider's gear says, between the two their ambiguous capstone leaves open: tank if it suits tanking better
+-- than damage, by the item roles' stat costs and wants (Roster.lua). Nil if their gear can't be read, and true as a
+-- second value if some of it is still loading.
+local function GearRole(unit, class)
+	if not AMBIGUOUS[class] then return nil end
+	local fits, loading = ns.GearFits(unit, class, AMBIGUOUS[class])
+	if not fits then return nil, loading end
+	return fits.TANK > fits.DAMAGER and "TANK" or "DAMAGER", loading
+end
+
+-- The role the player's own gear says, when their talents are ambiguous.
+function ns.MyGearRole()
+	local _, why = ns.MyRole()
+	if why ~= "ambiguous" then return nil end
+	local kept = Mine()
+	if not kept.gearRead then
+		local _, class = UnitClass("player")
+		kept.gear, kept.gearRead = GearRole("player", class), true
+	end
+	return kept.gear
 end
 
 -- Roles ---------------------------------------------------------------------------------------------------------
@@ -172,6 +225,7 @@ end
 -- uses it, so swapping roles or specs doesn't dodge the off-spec penalty. Anyone else's role is unknown, and rolls
 -- use their class's fallback role (ns.FallbackRole) until it's found.
 local roles, sources, told, inspected = {}, {}, {}, {}
+local gear = {} -- guid -> the role their gear says, when their talents are ambiguous (told by their client, or inspected)
 local why = {} -- guid -> what went wrong looking at their talents (a key of ns.UNKNOWN_REASONS), until it goes right
 -- The roles the writer last told the group (guid -> { role, source }, or { false, why } if unknown), which it knows
 -- best: other clients show these.
@@ -219,6 +273,8 @@ local function Resolve(member)
 	if inspected[member.guid] then return inspected[member.guid], "inspect" end
 	local role = AssignedRole(member)
 	if role then return role, "raid" end
+	role = member.guid == UnitGUID("player") and ns.MyGearRole() or gear[member.guid]
+	if role then return role, "gear" end
 	if ns.RoleReason(member.guid) == "ambiguous" then
 		role = LastKnown(member)
 		if role then return role, "known" end
@@ -303,16 +359,24 @@ function ns.SetWriterRoles(map)
 	Changed()
 end
 
--- A role a player's client told the group, from their talents, or why their talents don't settle one.
-function ns.ToldRole(sender, role, reason)
+-- Gear's say on a raider's role, if their talents are ambiguous and it's one of the two they leave open.
+local function SetGear(member, reason, role)
+	local open = reason == "ambiguous" and AMBIGUOUS[member.class]
+	gear[member.guid] = open and open[role] and role or nil
+end
+
+-- A role a player's client told the group, from their talents, or why their talents don't settle one (and, if they're
+-- ambiguous, what the player's gear says).
+function ns.ToldRole(sender, role, reason, gearRole)
 	local member = ns.GroupMember(sender)
 	local fills = Choices(member)
 	if fills and fills[role] then
-		told[member.guid], why[member.guid] = role, nil
+		told[member.guid], why[member.guid], gear[member.guid] = role, nil, nil
 		Changed()
 		ns.Fire("ROLE_FOUND", member.guid)
 	elseif fills and SETTLED[reason] then
 		why[member.guid] = reason
+		SetGear(member, reason, gearRole)
 		Changed()
 	end
 end
@@ -410,8 +474,8 @@ function ns.IsSweeping()
 	return sweep ~= nil
 end
 
-local function Tell(guid, role, reason)
-	if not ns.AmWriter() then ns.TellInspected(guid, role, reason) end
+local function Tell(guid, role, reason, gearRole)
+	if not ns.AmWriter() then ns.TellInspected(guid, role, reason, gearRole) end
 end
 
 -- A sweep that's tried everyone: how it went, in chat.
@@ -491,17 +555,19 @@ function ns.ApplyInspect(guid, role, asked)
 	local member = ns.GroupMember(guid)
 	local fills = Choices(member)
 	if not (fills and fills[role]) then return end
-	inspected[member.guid], why[member.guid] = role, nil
+	inspected[member.guid], why[member.guid], gear[member.guid] = role, nil, nil
 	if asked and (sources[member.guid] == "inspect" or sources[member.guid] == "raid") then roles[member.guid] = role end
 	Changed()
 	ns.Fire("ROLE_FOUND", member.guid, asked)
 end
 
--- Why an officer's inspect couldn't find a raider's role, sent to the writer (ns.TellInspected).
-function ns.InspectFailed(guid, reason)
+-- Why an officer's inspect couldn't find a raider's role, sent to the writer (ns.TellInspected), with what their gear
+-- says if their talents are ambiguous.
+function ns.InspectFailed(guid, reason, gearRole)
 	local member = ns.GroupMember(guid)
 	if not (Choices(member) and ns.UNKNOWN_REASONS[reason]) or roles[guid] or told[guid] or inspected[guid] then return end
 	why[guid] = reason
+	SetGear(member, reason, gearRole)
 	Changed()
 end
 
@@ -509,8 +575,10 @@ ns.On("INSPECT_READY", function(guid)
 	if guid ~= inspecting then return end
 	local member = ns.GroupMember(guid)
 	local talents = member and CAPSTONES[member.class] and C_Traits.HasValidInspectData() and ns.ReadTalents(true)
-	local role, reason
+	local role, reason, gearRole, loading
 	if talents then role, reason = TalentRole(member.class, talents) else reason = "unreadable" end
+	-- Ambiguous talents: their gear, read from the same inspect, says which.
+	if reason == "ambiguous" then gearRole, loading = GearRole(member.unit, member.class) end
 	local kind = inspectKind
 	if role then
 		-- A role an officer's own inspect is sure of replaces one an officer set by hand, for everyone.
@@ -518,17 +586,22 @@ ns.On("INSPECT_READY", function(guid)
 		ns.ApplyInspect(guid, role, kind ~= "auto")
 		if sweep and kind == "sweep" then sweep.found = sweep.found + 1 end
 	elseif member then
-		-- Talents that can't be read say nothing; ones that can, without a single role, need an officer's say.
+		-- Talents that can't be read say nothing; ones that can, without a single role, need their gear's say or an
+		-- officer's. Gear still loading is looked at again next time.
 		why[guid] = reason
-		if SETTLED[reason] then tries[guid] = INSPECT_TRIES end
+		SetGear(member, reason, gearRole)
+		if SETTLED[reason] and not (loading and not gearRole) then tries[guid] = INSPECT_TRIES end
+		if gearRole then ns.Fire("ROLE_FOUND", guid) end
 		Changed()
 	end
 	if member and kind ~= "auto" then
-		Tell(guid, role, role == nil and reason or nil)
+		Tell(guid, role, role == nil and reason or nil, gearRole)
 		if kind == "manual" then
 			local name = ns.ColoredName(guid, member.name)
 			if role then
 				ns.Print(L["TALENTS_SAY_" .. role]:format(name))
+			elseif gearRole then
+				ns.Print(L["GEAR_SAYS_" .. gearRole]:format(name))
 			else
 				ns.Print(("%s: %s"):format(name, ReasonText(reason)))
 			end
@@ -585,7 +658,7 @@ end
 -- Everything about roles is for the group, so it goes when the player leaves it, or logs in outside one (and with
 -- /pl test reset).
 function ns.ForgetRoles()
-	roles, sources, told, inspected, tries, writerRoles, why = {}, {}, {}, {}, {}, {}, {}
+	roles, sources, told, inspected, tries, writerRoles, why, gear = {}, {}, {}, {}, {}, {}, {}, {}
 	inspecting, inspectKind, sweep = nil, nil, nil
 	if inspectTimer then
 		inspectTimer:Cancel()

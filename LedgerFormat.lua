@@ -178,7 +178,7 @@ end
 -- version. The rows arrive unsigned; the officer signs them with the current key (Ledger:Sign).
 function ns.PackTable(ledger)
 	local head = ledger.data.head
-	local hash = #head.hash == 16 and head.hash or string.rep("\0", 16)
+	local hash = ledger:Hash()
 	local w = ns.NewWriter():Bytes(hash):U32(head.rev):Str8(head.by or "")
 	return WriteContent(w, ledger.data, true):Result()
 end

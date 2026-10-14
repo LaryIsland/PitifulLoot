@@ -37,6 +37,7 @@ local HELP = {
 	"/pl test lootpity - random pity on the latest loot, for you and about half the made-up raiders who can roll on it",
 	"/pl test loot [count] - loot items you're wearing, as if from a made-up boss: a new group on the Loot tab, which your group sees too",
 	"/pl test tutorialloot - the test menu's loot: the same five items every time",
+	"/pl test rolesloot - loot a spread of real Forever items for checking item roles and who can need them (fill a test raid first)",
 	"/pl test raider - show the window as a raider without officer powers sees it (again to switch back)",
 	"/pl test capture [new] - how much the test capture has recorded, or start a new one",
 	"/pl test trust <name> - count another player as an officer while in test mode, and let your test rolls reach the group while they're in it, to test with friends",
@@ -44,6 +45,7 @@ local HELP = {
 	"/pl test trade <item> - with a player targeted: a copy of <item> from your bags is awaiting trade to them",
 	"/pl test owed <item> - with a player targeted: a copy of <item> is awaiting trade from them to you",
 	"/pl test probe [item] - what the game says about loot methods, the minimap menu, specs and talents, your target and an item, to copy",
+	"/pl test stats [item | target | known] - every stat the game gives for your equipped gear and the latest loot (or an item, your target's gear, or the items seen on the beta so far), with their roles and fits, to copy",
 	"/pl test raid [players] [edge] - fill the Raid tab with made-up raiders (20, up to 40), some with roles unknown (edge: one of each kind); left-click fakes an inspect; again to empty it",
 }
 
@@ -500,28 +502,62 @@ local TUTORIAL_COPIES = { [6975] = 2 }
 local ITEM_WAIT = 2
 local lootToken
 
-function test.tutorialloot(from)
-	if not InTestMode() then return end
+-- Loots `items` (copies by item, if more than one), once the game has them loaded (or ITEM_WAIT has passed).
+local function LoadThenDrop(items, copies, from)
 	local token = {}
 	lootToken = token
-	local waiting = #TUTORIAL_LOOT
+	local waiting = #items
 	local function Drop()
 		if lootToken ~= token or not ns.IsTestMode() then return end
 		lootToken = nil
 		local loot = {}
-		for i, item in ipairs(TUTORIAL_LOOT) do
-			loot[i] = { item = item, copies = TUTORIAL_COPIES[item] or 1, boe = ns.IsBoE(item) or nil }
+		for i, item in ipairs(items) do
+			loot[i] = { item = item, copies = copies[item] or 1, boe = ns.IsBoE(item) or nil }
 		end
 		DropLoot(loot, from)
 	end
 	if not (Item and Item.CreateFromItemID) then return Drop() end
-	for _, id in ipairs(TUTORIAL_LOOT) do
+	for _, id in ipairs(items) do
 		Item:CreateFromItemID(id):ContinueOnItemLoad(function()
 			waiting = waiting - 1
 			if waiting == 0 then Drop() end
 		end)
 	end
 	C_Timer.After(ITEM_WAIT, Drop)
+end
+
+function test.tutorialloot(from)
+	if not InTestMode() then return end
+	LoadThenDrop(TUTORIAL_LOOT, TUTORIAL_COPIES, from)
+end
+
+-- For checking item roles and who can need-roll (Notes/Item Roles Review.md), on your own: real Forever items, from the
+-- beta's /pl test stats, with a spread of stats. Fixed-name items only, not random-suffix ones ("of the Bear"), whose
+-- stats an item ID alone doesn't give. Fill a test raid first (/pl test raid 20), as who can need an item depends on
+-- the classes in the group.
+local ROLES_LOOT = {
+	7688, -- Ironspine's Ribcage: mail chest, mostly stamina (3 agi, 17 sta, 6 str)
+	250556, -- Officer's Belt: mail, strength (10 str, 6 agi, 7 sta)
+	250558, -- Warder's Belt: mail, defense and spell power (7 defense, 7 spell power, 10 sta)
+	9624, -- Triprunner Dungarees: leather legs, agility (18 agi, 6 sta, 3 str)
+	3560, -- Mantle of Honor: cloth shoulders, intellect and spirit (7 int, 7 spi)
+	3415, -- Staff of the Friar: staff, healing with a third as much damage (52 healing, 17 damage, 12 spi, 3 int, 4 sta)
+	274290, -- Painwalker Buckler: shield, healing with damage (13 healing, 5 damage, 6 sta)
+	2280, -- Kam's Walking Stick: staff, damage and healing alike (32 spell power, 10 agi, 3 int)
+	273827, -- Debt Collector: one-handed sword, damage and healing alike (34 spell power)
+	6681, -- Thornspike: dagger, weapon damage only (and a chance on hit)
+	7001, -- Gravestone Scepter: wand, shadow damage (6 shadow damage, 3 spi)
+	5214, -- Wand of Eventide: wand, damage and healing alike (5 spell power)
+	6976, -- Whirlwind Warhammer: two-handed mace, warriors only (16 str, 15 sta)
+	7731, -- Ghostshard Talisman: neck, attack power (14 AP, 12 AP against undead, 9 sta)
+	273048, -- Refractory Scaleguards: mail legs, strength and arcane resistance (12 str, 5 arcane resistance, bonus armor)
+	2043, -- Ring of Forlorn Spirits: ring, damage and healing alike (8 spell power, 2 sta)
+	7686, -- Ironspine's Eye: ring, agility and strength (9 agi, 4 str)
+}
+
+function test.rolesloot()
+	if not InTestMode() then return end
+	LoadThenDrop(ROLES_LOOT, {})
 end
 
 function test.raider()
@@ -696,7 +732,7 @@ function test.probe(args)
 	Add("Your assigned role", Try(UnitGroupRolesAssigned, "player"))
 	-- The talents the role guess reads, from the trait tree: how many could be read, and those taken.
 	local function Talents(inspect)
-		local talents = ns.ReadTalents(inspect)
+		local talents = ns.ReadTalents(inspect, true)
 		if not talents then return "can't be read" end
 		local list = {}
 		for name in pairs(talents.taken) do list[#list + 1] = name end
@@ -745,6 +781,129 @@ function test.probe(args)
 		Add("Target's talents", ("valid inspect data %s; %s"):format(Try(C_Traits.HasValidInspectData), Talents(true)))
 		Finish()
 	end)
+end
+
+-- For the item roles review (Notes/Item Roles Review.md): what the game says about items' stats, to copy. Each item's
+-- level, type, GetItemStats as it comes, and its tooltip lines (which show any "Equip:" effects GetItemStats leaves out).
+-- Items the client hasn't loaded yet are asked for; run it again a moment later.
+local GEAR_SLOTS = { 1, 2, 3, 15, 5, 9, 10, 6, 7, 8, 11, 12, 13, 14, 16, 17, 18 } -- head to ranged, without shirt and tabard
+
+-- Every item in the beta's first /pl test stats (14 Oct: a priest's, a mage's, a rogue's, a warrior's and a paladin's
+-- gear), for `/pl test stats known`: the item roles' answers for all of them on your own, without other players to
+-- target. Random-suffix items ("of the Bear") show their base item's stats, which may be none.
+local KNOWN_ITEMS = {
+	7048, 281290, 3560, 6901, 2034, 5315, 270029, 253887, 6910, 273024, 270051, 2043, 273840, 3415, 7001, -- priest
+	4315, 6614, 6610, 9793, 14209, 7046, 6612, 6750, 273298, 2280, 5214, -- mage
+	10406, 274068, 5964, 5193, 2041, 270032, 7690, 10412, 9624, 2033, 7686, 6748, 6681, 274092, -- rogue
+	250528, 7731, 15698, 7460, 7688, 250556, 250523, 273025, 282283, 284715, 280766, 6976, 17687, -- warrior
+	250532, 273049, 279839, 279835, 273035, 273293, 273810, 250558, 273048, 2933, 274290, 273827, -- paladin
+}
+
+function test.stats(args)
+	local lines = { "Pitiful Loot item stats, " .. date("%Y-%m-%d %H:%M"), "Client: " .. Try(GetBuildInfo) }
+	local missing = 0
+	local function Item(label, link)
+		local item = link and ns.ItemID(link)
+		if not item then return end
+		local name, full, quality, level = C_Item.GetItemInfo(link)
+		if not name then
+			missing = missing + 1
+			if C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(item) end
+			lines[#lines + 1] = ("%s: item %d <not loaded yet; run again>"):format(label, item)
+			return
+		end
+		local _, _, _, equipLoc, _, itemClass, subclass = C_Item.GetItemInfoInstant(item)
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = ("%s: %s (%d), item level %s, quality %s, %s, class %s subclass %s"):format(label, name, item,
+			Text(level), Text(quality), Text(equipLoc), Text(itemClass), Text(subclass))
+		local stats, keys = C_Item.GetItemStats(full or link) or {}, {}
+		for key in pairs(stats) do keys[#keys + 1] = key end
+		table.sort(keys)
+		local parts = {}
+		for _, key in ipairs(keys) do parts[#parts + 1] = key .. "=" .. Text(stats[key]) end
+		lines[#lines + 1] = "  Stats: " .. (parts[1] and table.concat(parts, ", ") or "none")
+		-- What the item roles make of it (Notes/Item Roles Review.md): its roles, and each class's best fit.
+		local fits, roles = ns.ItemFits(item)
+		if fits then
+			local list, order = {}, {}
+			for class in pairs(fits) do order[#order + 1] = class end
+			table.sort(order, function(a, b) return fits[a] > fits[b] end)
+			for _, class in ipairs(order) do list[#list + 1] = ("%s %.2f"):format(class:sub(1, 1) .. class:sub(2):lower(), fits[class]) end
+			local roleList = {}
+			for _, role in ipairs(ns.ROLE_ORDER) do
+				if roles and roles[role] then roleList[#roleList + 1] = ns.ROLE_NAMES[role] end
+			end
+			lines[#lines + 1] = ("  Roles: %s; fits: %s"):format(roleList[1] and table.concat(roleList, ", ") or "everyone",
+				table.concat(list, ", "))
+		elseif C_Item.GetItemInfo(item) then
+			lines[#lines + 1] = "  Roles: everyone (no stats the rules know, or mostly resistances)"
+		end
+		local tip = C_TooltipInfo and C_TooltipInfo.GetHyperlink and C_TooltipInfo.GetHyperlink(full or link)
+		for i, line in ipairs(tip and tip.lines or {}) do
+			if i > 1 then
+				lines[#lines + 1] = "  " .. Text(line.leftText) .. (line.rightText and ("  |  " .. Text(line.rightText)) or "")
+			end
+		end
+	end
+	local function Gear(unit, who)
+		for _, slot in ipairs(GEAR_SLOTS) do Item(("%s slot %d"):format(who, slot), GetInventoryItemLink(unit, slot)) end
+	end
+	local function Finish()
+		if missing > 0 then ns.Print(("%d items weren't loaded yet; run it again in a moment for those."):format(missing)) end
+		local text = table.concat(lines, "\n")
+		ns.Capture("stats", text)
+		ns.LastStats = text
+		ShowCopyBox("Pitiful Loot item stats", text)
+	end
+
+	local what = args[3] and args[3]:lower()
+	if what == "known" then
+		-- Each once, after the game has loaded them (or ITEM_WAIT has passed).
+		local waiting, done = #KNOWN_ITEMS, false
+		local function Show()
+			if done then return end
+			done = true
+			for i, item in ipairs(KNOWN_ITEMS) do
+				local _, link = C_Item.GetItemInfo(item)
+				Item("Known " .. i, link or ("item:" .. item))
+			end
+			Finish()
+		end
+		ns.Print(("Loading %d items; the stats open in a moment."):format(#KNOWN_ITEMS))
+		local ItemMixin = _G.Item -- the game's; Item here is this function's own
+		if not (ItemMixin and ItemMixin.CreateFromItemID) then return Show() end
+		for _, id in ipairs(KNOWN_ITEMS) do
+			ItemMixin:CreateFromItemID(id):ContinueOnItemLoad(function()
+				waiting = waiting - 1
+				if waiting == 0 then Show() end
+			end)
+		end
+		return C_Timer.After(ITEM_WAIT, Show)
+	end
+	if what == "target" then
+		if not TargetPlayer() then return ns.Print("Target another player first.") end
+		if not CanInspect("target") then return ns.Print("Can't inspect your target from here: get closer.") end
+		lines[#lines + 1] = "Target: " .. Try(UnitName, "target") .. " (" .. Try(UnitClass, "target") .. ")"
+		NotifyInspect("target")
+		ns.Print("Inspecting your target; the stats open in 2 seconds.")
+		return C_Timer.After(2, function()
+			Gear("target", "Target's")
+			Finish()
+		end)
+	end
+	local item = args[3] and ns.ItemID(args[3])
+	if item then
+		local _, link = C_Item.GetItemInfo(item)
+		Item("Item", link or ("item:" .. item))
+		return Finish()
+	end
+	Gear("player", "Your")
+	local group = ns.LatestLoot()
+	for i, entry in ipairs(group and group.items or {}) do
+		local _, link = C_Item.GetItemInfo(entry.item)
+		Item("Loot " .. i, link or ("item:" .. entry.item))
+	end
+	Finish()
 end
 
 -- Made-up raiders for the Raid tab, after you in group 1: every class, roles from each source, and some unknown,

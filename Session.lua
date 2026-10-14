@@ -8,7 +8,8 @@ local L, CHAT = ns.L, ns.CHAT
 --   writer  {}                                       an officer claiming the writer role
 --   open    {sid, item, copies, greed, opened, secs, instance, boss} a roll starts (and where the item dropped)
 --   rolls   {sid, round, list}                       rolls counted ({id, name, roll, pity, os}) or refused ({name, roll, why,
---                                                    low, high}, why being a code: late, range, raid, won, cantuse or
+--                                                    low, high}, why being a code: late, range, raid, won, cantuse,
+--                                                    notforclass or
 --                                                    AddRoll's; low and high the range rolled, for range)
 --   os      {sid, id, os, unknown}                   the writer corrected an off-spec flag (`unknown`: by a fallback role)
 --   reroll  {sid, round, ids, slots, winners, secs}  a tie that needs rolling off
@@ -602,7 +603,8 @@ local function WriterRoll(name, roll, low, high)
 	-- Anyone can greed-roll, and greed is for gold, so nobody is off-spec for it (4.8).
 	if m.round == 1 then
 		if not m.greed and ns.HasWon(id, m.item) then return Refuse("won") end
-		if not m.greed and not ns.CanUse(id, m.item) then return Refuse("cantuse") end
+		local cant = not m.greed and ns.WhyCantUse(id, m.item)
+		if cant then return Refuse(cant) end
 		pity = PityIn(m, id)
 		if m.greed then offSpec = false else offSpec, guessed = ns.IsOffSpec(id, m.item) end
 	end
@@ -744,6 +746,11 @@ function ns.StartRoll(item, copies, greed)
 		return ns.Print(L.MSG_FINISH_ROLL)
 	end
 	copies = copies or 1
+	-- An item nobody here gets much from goes straight to greed (4.5).
+	if not greed and not ns.ForEveryone(item) and not ns.NeedViable(item) then
+		greed = true
+		ns.Print(L.MSG_GREED_ONLY:format(ns.ItemLink(item)))
+	end
 	count = count + 1
 	local opened = GetServerTime()
 	local instance, boss = DropSource(item)
@@ -938,13 +945,13 @@ ns.Receive(LIVE, "setrole", function(d, sender)
 end)
 
 -- An officer's inspect from the Raid tab goes to the writer, whose view of the roles everyone sees.
-function ns.TellInspected(guid, role, why)
-	if live.writer then SendLive("inspected", { id = guid, role = role, why = why }, live.writer) end
+function ns.TellInspected(guid, role, why, gear)
+	if live.writer then SendLive("inspected", { id = guid, role = role, why = why, gear = gear }, live.writer) end
 end
 
 ns.Receive(LIVE, "inspected", function(d, sender)
 	if type(d) ~= "table" or type(d.id) ~= "string" or not ns.IsOfficer(sender) or not ns.AmWriter() then return end
-	if d.role then ns.ApplyInspect(d.id, d.role, true) else ns.InspectFailed(d.id, d.why) end
+	if d.role then ns.ApplyInspect(d.id, d.role, true) else ns.InspectFailed(d.id, d.why, d.gear) end
 end)
 
 -- The writer tells the group the roles it knows (it inspects players, so it knows most), a moment after they change
@@ -969,7 +976,7 @@ ns.Receive(LIVE, "roles", function(d, sender)
 end)
 
 -- Why you can't take part in the roll that's on, if you can't, for the window: nottied (it's a reroll you're not
--- in), won or class.
+-- in), won, class (your class can't wear or wield it) or notforclass (its stats aren't for your class).
 function ns.WhyCantRoll()
 	local m = live.mirror
 	if not IsActive(m) then return nil end
@@ -979,7 +986,8 @@ function ns.WhyCantRoll()
 	end
 	if m.greed then return nil end
 	if ns.HasWon(me, m.item) then return "won" end
-	if not ns.CanUse(me, m.item) then return "class" end
+	local cant = ns.WhyCantUse(me, m.item)
+	if cant then return cant == "notforclass" and cant or "class" end
 	return nil
 end
 
@@ -1105,13 +1113,18 @@ end
 
 -- Handover and late joiners ---------------------------------------------------------------------------------------
 
-local toldRole -- the role this client last told the writer
+local toldRole -- the role this client last told the writer (or why it has none, and what its gear says)
+
+local function RoleKey(said)
+	return (said.role or said.why or "") .. ":" .. (said.gear or "")
+end
 
 -- What this client says to the writer: the role its talents show, or why they don't settle one; and, for a member,
 -- what its own row holds, so the writer can send back anything that differs (the row check, 6.3).
 local function MyRoleMessage()
 	local role, why = ns.MyRole()
 	local message = { role = role, why = (why == "nocapstone" or why == "ambiguous") and why or nil }
+	if why == "ambiguous" then message.gear = ns.MyGearRole() end
 	if ns.ledger and not ns.HoldsTable() then
 		local me = UnitGUID("player")
 		message.check = ns.EncodeRowCheck(me, ns.RowsOf(me))
@@ -1133,26 +1146,27 @@ ns.Receive(LIVE, "writer", function(_, sender)
 	end
 	live.writer = sender
 	local said = MyRoleMessage()
-	toldRole = said.role or said.why
+	toldRole = RoleKey(said)
 	SendLive("here", said, sender)
 	ns.Fire("SESSION_CHANGED")
 end)
 
 ns.Receive(LIVE, "here", function(d, sender)
 	if type(d) ~= "table" then return end
-	ns.ToldRole(sender, d.role, d.why)
+	ns.ToldRole(sender, d.role, d.why, d.gear)
 	CheckRaiderRows(d, sender)
 end)
 
 -- A new spec or talents can mean a new role; the writer hears of it, though a role already used for a roll stays.
 local function RetellRole()
 	local said = MyRoleMessage()
-	if (said.role or said.why) == toldRole or not live.writer or ns.AmWriter() then return end
-	toldRole = said.role or said.why
+	if RoleKey(said) == toldRole or not live.writer or ns.AmWriter() then return end
+	toldRole = RoleKey(said)
 	SendLive("here", said, live.writer)
 end
 ns.On("PLAYER_TALENT_UPDATE", RetellRole)
 ns.On("ACTIVE_TALENT_GROUP_CHANGED", RetellRole)
+ns.On("PLAYER_EQUIPMENT_CHANGED", RetellRole) -- gear settles ambiguous talents
 
 -- Whoever sends the writer anything has the addon: a reply to a new writer, a query, a pass.
 ns.OnMessage(LIVE, function(sender)
@@ -1162,7 +1176,7 @@ end)
 
 ns.Receive(LIVE, "query", function(d, sender)
 	if type(d) == "table" then
-		ns.ToldRole(sender, d.role, d.why)
+		ns.ToldRole(sender, d.role, d.why, d.gear)
 		CheckRaiderRows(d, sender)
 	end
 	if not ns.AmWriter() then return end

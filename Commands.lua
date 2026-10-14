@@ -219,7 +219,7 @@ end
 function commands.status()
 	if ns.ledger then
 		local head = ns.Head()
-		ns.Print((ns.SyncBusy() and L.MSG_STATUS_SYNCING or L.MSG_STATUS):format(ns.guild, head.rev, ns.ToHex(head.hash):sub(1, 8)))
+		ns.Print((ns.SyncBusy() and L.MSG_STATUS_SYNCING or L.MSG_STATUS):format(ns.guild, head.rev, ns.ToHex(ns.ledger:Hash()):sub(1, 8)))
 	else
 		ns.Print(L.MSG_STATUS_NO_LEDGER)
 	end
