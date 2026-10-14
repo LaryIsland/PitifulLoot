@@ -11,6 +11,10 @@ local _, ns = ...
 -- and sets the lines it translates; anything it leaves out stays in English.
 --
 -- Placeholders: %s is text (a name, an item, another line), %d a whole number. Keep them, in the same order.
+--
+-- Names of things in the addon players see or click (tabs, buttons, options, commands) go in braces, {like this}:
+-- they're shown in a colour of their own. A placeholder for one goes in braces too: {%s}. Raid chat (CHAT, at the
+-- end) can't carry colours, so it has none.
 
 local L = LibStub("AceLocale-3.0"):NewLocale("PitifulLoot", "enUS", true)
 
@@ -30,6 +34,9 @@ L["EMPTY_LOOT_HIDDEN"] = "None of the loot is for you."
 L["EMPTY_RAID"] = "Join a raid to see its roles."
 L["EMPTY_NOT_ROLLED_YET"] = "No one has rolled yet."
 L["EMPTY_NO_ONE_ROLLED"] = "No one rolled."
+-- Under the Roll tab's empty text when you're not in a raid: a link to the test menu, and its tooltip's hint.
+L["EMPTY_TRY_TEST"] = "New here?"
+L["EMPTY_TRY_TEST_BUTTON"] = "Try the Tutorial"
 
 -- Under the item being rolled for: how its roll stands, then the time left.
 L["STATE_OPEN"] = "Rolling"
@@ -115,7 +122,8 @@ L["CANT_ROLL_CLASS_TIP"] = "You can't roll: you can't use this item."
 -- at the end of this file.
 L["REFUSED_DETAIL"] = "Didn't count: %s"
 L["REFUSED"] = "Your roll of %d didn't count: %s."
-L["REFUSED_RANGE_HINT"] = "Only a roll from 1 to 100 counts: click to roll, or type /roll."
+L["REFUSED_RANGE_ONLY"] = "Only a roll from 1 to 100 counts." -- after a roll in another range, under the reason
+L["REFUSED_RANGE_HINT"] = "Click to roll, or type /roll" -- the click hint under it
 
 -- The Loot tab -----------------------------------------------------------------------------------------------------
 
@@ -212,36 +220,36 @@ L["OPT_ROLL_TIME_TIP"] = "How long players have to /roll when a roll starts."
 L["OPT_REROLL_TIME"] = "Reroll Time"
 L["OPT_REROLL_TIME_TIP"] = "How long tied players have to /roll again."
 L["OPT_LOOT_QUALITY"] = "Loot Quality"
-L["OPT_LOOT_QUALITY_TIP"] = "The lowest item quality listed in the loot tab for rolling."
+L["OPT_LOOT_QUALITY_TIP"] = "The lowest item quality listed in the {loot} tab for rolling."
 L["OPT_QUALITY_UNCOMMON"] = "Uncommon"
 L["OPT_QUALITY_RARE"] = "Rare"
 L["OPT_QUALITY_EPIC"] = "Epic"
 L["OPT_QUALITY_LEGENDARY"] = "Legendary"
 L["OPT_AUTO_AWARD"] = "Award Automatically"
-L["OPT_AUTO_AWARD_TIP"] = "As the writer, award rolls the instant they're decided, without clicking Award."
+L["OPT_AUTO_AWARD_TIP"] = "As the writer, award rolls the instant they're decided, without clicking {Award}."
 L["OPT_AUTO_ROLL"] = "Auto-roll"
-L["OPT_AUTO_ROLL_TIP"] = "Rolls for you.\nRerolls only: only rolls when you're tied.\nEvery roll: rolls on everything you're eligible for, unless you pass first."
+L["OPT_AUTO_ROLL_TIP"] = "Rolls for you.\n{Rerolls only}: only rolls when you're tied.\n{Every roll}: rolls on everything you're eligible for, unless you pass first."
 L["OPT_AUTO_ROLL_OFF"] = "Off"
 L["OPT_AUTO_ROLL_REROLLS"] = "Rerolls only"
 L["OPT_AUTO_ROLL_ALL"] = "Every roll"
 L["OPT_AUTO_SHOW"] = "Show When I Can Roll"
-L["OPT_AUTO_SHOW_TIP"] = "Open the addon on the Roll tab when a roll starts that you're eligible for."
+L["OPT_AUTO_SHOW_TIP"] = "Open the addon on the {Roll} tab when a roll starts that you're eligible for."
 L["OPT_AUTO_SHOW_LOOT"] = "Show New Loot"
-L["OPT_AUTO_SHOW_LOOT_TIP"] = "Open the addon on the Loot tab when a boss's loot is added."
+L["OPT_AUTO_SHOW_LOOT_TIP"] = "Open the addon on the {Loot} tab when a boss's loot is added."
 L["OPT_HIDE_UNROLLABLE"] = "Hide Loot I Can't Roll On"
-L["OPT_HIDE_UNROLLABLE_TIP"] = "Hide items you can't roll on from the Loot tab."
+L["OPT_HIDE_UNROLLABLE_TIP"] = "Hide items you can't roll on from the {Loot} tab."
 L["OPT_PITY_BY_BOSS"] = "Group My Pity by Boss"
-L["OPT_PITY_BY_BOSS_TIP"] = "On the My Pity tab, group items by the boss that drops them."
+L["OPT_PITY_BY_BOSS_TIP"] = "On the {My Pity} tab, group items by the boss that drops them."
 L["OPT_HIDE_WON"] = "Hide Won Items"
-L["OPT_HIDE_WON_TIP"] = "Hide items you've won from the My Pity tab."
+L["OPT_HIDE_WON_TIP"] = "Hide items you've won from the {My Pity} tab."
 L["OPT_MINIMAP_BUTTON"] = "Minimap Button"
 L["OPT_MINIMAP_BUTTON_TIP"] = "Show a minimap button: left-click opens the addon, right-click for options."
 L["OPT_SHOW_RAID_TAB"] = "Show the Raid Tab"
-L["OPT_SHOW_RAID_TAB_TIP"] = "Show the Raid tab, with every raider's role."
+L["OPT_SHOW_RAID_TAB_TIP"] = "Show the {Raid} tab, with every raider's role."
 L["OPT_TOOLTIP_HINTS"] = "Show Click Hints in Tooltips"
 L["OPT_TOOLTIP_HINTS_TIP"] = "End this addon's tooltips with green hint lines saying what clicks will do."
 L["OPT_OFFICER"] = "Officer options" -- the tick box bottom right
-L["OPT_OFFICER_TIP"] = "Show the options for running rolls. The raid and loot tabs always show in full for officers."
+L["OPT_OFFICER_TIP"] = "Show the options for running rolls. The {raid} and {loot} tabs always show in full for officers."
 
 -- Profiles: the option, its menu and its dialogs.
 L["OPT_PROFILE"] = "This Character"
@@ -263,25 +271,141 @@ L["HINT_MINIMAP_LEFT"] = "Left-click to show or hide the addon."
 L["HINT_MINIMAP_RIGHT"] = "Right-click for options."
 L["HINT_MINIMAP_DRAG"] = "Drag to move."
 
+-- The test menu (/pl test): a raid night on your own, a step at a time, for learning how the addon works -----------
+
+-- Its text is for someone who's never used the addon. \n\n starts a new paragraph. The %s in it
+-- are the main window's tab and button names, from the lines above (TAB_ROLL, BUTTON_AWARD and so on).
+L["TEST_TITLE"] = "Tutorial"
+-- After the main window's title while test mode is on, in red.
+L["TEST_WINDOW_TITLE"] = "(test mode)"
+L["TEST_WINDOW_TITLE_AS_RAIDER"] = "(test mode, as a raider)"
+L["TEST_INTRO"] = "Walk through a raid on your own, step by step."
+-- Why a button or box can't be used yet, in light blue at the top of its tooltip.
+L["TEST_NEED_TEST_MODE"] = "Turn on {Test Mode} first, it's at the top."
+L["TEST_IN_RAID"] = "Test mode can't be used inside a raid."
+L["TEST_IN_RAID_GROUP"] = "Test mode can't be used in a raid group."
+L["TEST_RAID_FILLED"] = "{Empty the raid} to change this."
+L["TEST_NEED_LOOT"] = "{Loot a boss} first, in step 3."
+L["TEST_NEED_RAIDERS"] = "{Fill the raid} first, in step 1."
+L["TEST_NEED_ROLL"] = "Start a roll first: click an item on the {%s} tab." -- the Loot tab
+L["TEST_FIRST_ROUND"] = "Ties are made in the first round."
+L["TEST_ARRIVING"] = "Wait for the raiders' rolls to come in."
+L["TEST_NEED_ROLLS"] = "Wait for someone to roll first."
+L["TEST_PREVIOUS_STEP"] = "Finish step %d first." -- the step before this one
+L["TEST_ALREADY_DONE"] = "Done. {Start Over} to do it again." -- a step's button that's done its job
+-- Above the steps.
+L["TEST_MODE"] = "Test Mode"
+L["TEST_MODE_TIP"] = "Test mode lets you try the addon without touching real data or needing a group.\n\nAll messages are shown only to you."
+L["TEST_START_OVER"] = "Start Over"
+L["TEST_START_OVER_TIP"] = "Clears all test data."
+-- Which page of steps to show: taking part as a raider, or running the loot as an officer.
+L["TEST_PAGE_RAIDER"] = "Raider"
+L["TEST_PAGE_OFFICER"] = "Officer"
+L["TEST_PAGE_TIP"] = "{Raider}: rolling for loot in a raid.\n{Officer}: running the loot."
+-- The raider page: three steps, an officer's part done for you.
+L["TEST_R_SHARE"] = "1. Loot Is Shared"
+L["TEST_R_SHARE_TIP"] = "An officer loots the boss and shares the items with the raid."
+L["TEST_R_SHARE_BUTTON"] = "Share Loot"
+L["TEST_R_SHARE_BUTTON_TIP"] = "Simulates an officer sharing a boss's loot."
+L["TEST_R_PITY"] = "2. Your Pity" -- with TEST_PITY_TIP under it, and the Give Test Pity button
+L["TEST_R_ROLL"] = "3. Roll"
+L["TEST_R_ROLL_TIP"] = "An officer starts a roll on each item in turn, and the other raiders roll too."
+L["TEST_R_START_ROLL"] = "Start a Roll"
+L["TEST_R_START_ROLL_TIP"] = "Simulates an officer starting a roll on the next item."
+L["TEST_R_ROLL_ON"] = "Wait for this roll to finish."
+L["TEST_R_ALL_ROLLED"] = "Every item's been rolled for. {Start Over} to go again."
+-- The officer page.
+-- Step 1. Each step has a title, a description under it in grey saying what happens at that point in a real raid,
+-- and some have a line in white saying what to do or look at in the main window (above the description in step 5).
+L["TEST_RAID"] = "1. Gather the Raid"
+L["TEST_RAID_TIP"] = "Roles come from talents, or an officer setting them.\nRolling on an item as off-spec incurs a -20 roll penalty."
+L["TEST_RAID_LINE"] = "Fill the raid, then click {%s}." -- RAID_INSPECT_UNKNOWN
+L["TEST_RAIDERS"] = "Raiders"
+L["TEST_RAIDERS_TIP"] = "How many people are in the test raid."
+L["TEST_FILL"] = "Fill the Raid"
+L["TEST_FILL_TIP"] = "Adds test raiders to the {%s} tab.\n\nSome have roles the addon doesn't know yet, shown with a question mark." -- the Raid tab
+L["TEST_EMPTY"] = "Empty the Raid"
+L["TEST_EMPTY_TIP"] = "Clears the test raiders."
+-- Step 2.
+L["TEST_WRITER"] = "2. Take Charge of the Loot"
+L["TEST_WRITER_TIP"] = "One officer runs the loot rolls for the whole raid: the writer."
+L["TEST_WRITER_LINE"] = "Click {%s} at the bottom of the main window." -- BUTTON_BE_WRITER
+-- Step 3.
+L["TEST_LOOT"] = "3. Loot the Boss"
+L["TEST_LOOT_TIP"] = "When you check a boss's loot, the list is shared with the raid."
+L["TEST_LOOT_BUTTON"] = "Loot a Boss"
+L["TEST_LOOT_BUTTON_TIP"] = "Simulates a boss dropping items." -- the Loot tab
+-- Step 4.
+L["TEST_PITY"] = "4. Pity From Earlier Raids"
+L["TEST_PITY_TIP"] = "When you lose an item roll:\nYour next roll on that item gets +10, up to +50."
+L["TEST_GIVE_PITY"] = "Give Test Pity"
+L["TEST_GIVE_PITY_TIP"] = "Gives you and some of the raiders pity on this boss's items, as if you'd lost rolls on them in earlier raids."
+-- Step 5.
+L["TEST_ROLL"] = "5. Roll"
+L["TEST_ROLL_TIP"] = "Players without the addon can still type /roll"
+L["TEST_ROLL_LINE"] = "Open the {%s} tab, then click an item to start a roll." -- the Loot tab
+L["TEST_MAKE_TIE"] = "Make a Tie"
+L["TEST_MAKE_TIE_TIP"] = "A raider rolls the same total as the highest, so you can see what happens in a tie."
+-- Step 6.
+L["TEST_AWARD"] = "6. Hand Out the Loot"
+L["TEST_AWARD_TIP"] = "" -- BUTTON_AWARD
+L["TEST_AWARD_LINE"] = "Once a roll is decided, the writer clicks {%s}. The winner gets the item, and everyone else who rolled gains +10 pity on it." -- BUTTON_AWARD, the Loot tab
+-- Step 7.
+L["TEST_AS_RAIDER"] = "7. See It as a Raider"
+L["TEST_AS_RAIDER_TIP"] = "Raiders see the rolls, the loot and their own pity, but none of the officers' controls."
+L["TEST_VIEW_AS_RAIDER"] = "View as a Raider"
+L["TEST_VIEW_AS_RAIDER_TIP"] = "Shows the main window the way raiders without officer powers see it."
+-- In chat, as the steps are done.
+L["TEST_MSG_ON"] = "Test mode on. Raid messages are shown only to you."
+L["TEST_MSG_OFF"] = "Test mode off"
+L["TEST_MSG_OFF_IN_RAID"] = "Test mode has turned off, as you're inside a raid."
+L["TEST_MSG_OFF_IN_RAID_GROUP"] = "Test mode has turned off, as you're in a raid group."
+L["TEST_MSG_NEED_TEST_MODE"] = "Turn on test mode first, at the top of the test menu ({/pl test})."
+L["TEST_MSG_RESET"] = "The test data has been cleared."
+L["TEST_MSG_RAID_FILLED"] = "%d raiders are on the {%s} tab." -- how many, the Raid tab
+L["TEST_MSG_RAID_FILLED_UNKNOWN"] = "%d raiders are on the {%s} tab, the first with each kind of unknown role." -- how many, the Raid tab
+L["TEST_MSG_RAID_GONE"] = "Cleared the test raiders."
+L["TEST_MSG_NO_GEAR"] = "Wear some gear first: the test loot is made from items you're wearing."
+L["TEST_MSG_NEED_LOOT"] = "{Loot a boss} first."
+L["TEST_MSG_PITY_GIVEN"] = "You have pity on %d of these items."
+L["TEST_MSG_PITY_GIVEN_RAID"] = "You have pity on %d of these items, and %d test raiders have some too."
+L["TEST_MSG_NEED_ROLL"] = "Start a roll first: click an item on the {%s} tab." -- the Loot tab
+L["TEST_MSG_NEED_RAIDERS"] = "{Fill the raid} first."
+L["TEST_MSG_ROLLING_ONE"] = "1 test raider is rolling."
+L["TEST_MSG_ROLLING"] = "%d test raiders are rolling."
+L["TEST_MSG_REROLLING_ONE"] = "1 test raider is rolling again."
+L["TEST_MSG_REROLLING"] = "%d test raiders are rolling again."
+L["TEST_MSG_NOBODY_ROLLS"] = "None of the test raiders can roll now."
+L["TEST_MSG_FIRST_ROUND"] = "Ties are made in the first round."
+L["TEST_MSG_TIE_NEED_ROLL"] = "Someone has to roll first."
+L["TEST_MSG_TIE_NEED_ROLLS"] = "%d copies dropped, so %d people have to roll first."
+L["TEST_MSG_TIED"] = "%s rolled %d for a total of %d, the same as %s." -- the raider, their roll, the total, the leader
+L["TEST_MSG_NO_TIE"] = "None of the test raiders who are left could tie it."
+L["TEST_MSG_TRADED"] = "Traded %s to %s." -- the items, the test raider
+L["TEST_MSG_AS_RAIDER_ON"] = "The window now shows what a raider without officer powers sees."
+L["TEST_MSG_AS_RAIDER_OFF"] = "The window shows your officer controls again."
+L["TEST_MSG_REOPEN"] = "You can open the tutorial again any time with {/pl test}."
+
 -- Slash commands (/pl help). The command words themselves stay in English. --------------------------------------
 
-L["HELP_TOGGLE"] = "/pl - show or hide the addon"
-L["HELP_OPTIONS"] = "/pl options - open the Options tab"
-L["HELP_WRITER"] = "/pl writer - run loot rolls for this raid (officers)"
-L["HELP_ROLL"] = "/pl roll <item> [copies] [greed] - start a roll"
-L["HELP_ROUND"] = "/pl close | cancel | award - end the current round, drop the roll, or record and hand out the item"
-L["HELP_DISENCHANT"] = "/pl disenchant - mark a BoP item no one rolled on to be disenchanted"
-L["HELP_SELL"] = "/pl sell - mark a BoE no one greed-rolled on to be kept and sold"
-L["HELP_PASS"] = "/pl pass - pass on the roll in progress"
-L["HELP_OS"] = "/pl os <name> - flip a roll's off-spec flag before the first round closes"
-L["HELP_PITY"] = "/pl pity [name] - list pity"
-L["HELP_LEAVE"] = "/pl leave <name> | rejoin <name> - record a player leaving or rejoining the guild by hand (officers)"
-L["HELP_ADJUST"] = "/pl adjust <name> <item> <+/-pity|won> [unlock] - correct pity, record a win, or lift a lockout (officers)"
-L["HELP_RESYNC"] = "/pl resync <officer> - replace your ledger with an officer's"
-L["HELP_STATUS"] = "/pl status - ledger revision, writer and warnings"
-L["HELP_LOG"] = "/pl log [count] - the latest events in your full log, and your ledger checked against it"
-L["USAGE_ROLL"] = "/pl roll <item link or ID> [copies] [greed]"
-L["USAGE_ADJUST"] = "/pl adjust <name> <item> <+/-pity|won> [unlock]"
+L["HELP_TOGGLE"] = "{/pl} - show or hide the addon"
+L["HELP_OPTIONS"] = "{/pl options} - open the {Options} tab"
+L["HELP_WRITER"] = "{/pl writer} - run loot rolls for this raid (officers)"
+L["HELP_ROLL"] = "{/pl roll <item> [copies] [greed]} - start a roll"
+L["HELP_ROUND"] = "{/pl close | cancel | award} - end the current round, drop the roll, or record and hand out the item"
+L["HELP_DISENCHANT"] = "{/pl disenchant} - mark a BoP item no one rolled on to be disenchanted"
+L["HELP_SELL"] = "{/pl sell} - mark a BoE no one greed-rolled on to be kept and sold"
+L["HELP_PASS"] = "{/pl pass} - pass on the roll in progress"
+L["HELP_OS"] = "{/pl os <name>} - flip a roll's off-spec flag before the first round closes"
+L["HELP_PITY"] = "{/pl pity [name]} - list pity"
+L["HELP_LEAVE"] = "{/pl leave <name> | rejoin <name>} - record a player leaving or rejoining the guild by hand (officers)"
+L["HELP_ADJUST"] = "{/pl adjust <name> <item> <+/-pity|won> [unlock]} - correct pity, record a win, or lift a lockout (officers)"
+L["HELP_RESYNC"] = "{/pl resync <officer>} - replace your ledger with an officer's"
+L["HELP_STATUS"] = "{/pl status} - ledger revision, writer and warnings"
+L["HELP_LOG"] = "{/pl log [count]} - the latest events in your full log, and your ledger checked against it"
+L["HELP_TEST"] = "{/pl test} - walk through a raid on your own, step by step"
+L["USAGE_ROLL"] = "{/pl roll <item link or ID> [copies] [greed]}"
+L["USAGE_ADJUST"] = "{/pl adjust <name> <item> <+/-pity|won> [unlock]}"
 
 -- Messages in your own chat window ---------------------------------------------------------------------------------
 
@@ -294,7 +418,7 @@ L["MSG_PITY_WON"] = "%s won"
 L["MSG_PITY_NONE"] = "%s has no pity yet."
 L["MSG_PITY_STEPS"] = "Pity changes go in steps of 10, from -50 to +50."
 L["MSG_ADJUST_ALREADY_WON"] = "%s has already won %s."
-L["MSG_ADJUST_WON"] = "%s has won %s; add unlock to give them pity on it again."
+L["MSG_ADJUST_WON"] = "%s has won %s; add {unlock} to give them pity on it again."
 L["MSG_STATUS"] = "%s ledger: revision %d (%s)."
 L["MSG_STATUS_SYNCING"] = "%s ledger: revision %d (%s), syncing."
 L["MSG_STATUS_NO_LEDGER"] = "No guild ledger loaded."
@@ -303,7 +427,7 @@ L["MSG_STATUS_NO_LEDGER"] = "No guild ledger loaded."
 L["MSG_NEED_GROUP"] = "You need to be in a group."
 L["MSG_WRITER_OFFICERS"] = "Only officers can be the writer."
 L["MSG_LEDGER_NOT_LOADED"] = "Your guild's ledger hasn't loaded yet."
-L["MSG_WRITER_ONLY"] = "Only the writer can start a roll. An officer becomes the writer with /pl writer."
+L["MSG_WRITER_ONLY"] = "Only the writer can start a roll. An officer becomes the writer with {/pl writer}."
 L["MSG_WAIT_SYNC"] = "Wait until your ledger has finished syncing."
 L["MSG_FINISH_ROLL"] = "Award or cancel the current roll first."
 L["MSG_NOTHING_TO_AWARD"] = "There's no decided roll to award."
@@ -311,7 +435,7 @@ L["MSG_ONLY_SELL"] = "Only a BoE no one greed-rolled on can be kept to sell."
 L["MSG_ONLY_DISENCHANT"] = "Only an item no one rolled on can be disenchanted."
 L["MSG_ROLES_FAILED"] = "The roles couldn't be recorded: %s."
 L["MSG_WRITER_TAKEN"] = "%s has taken over as the writer."
-L["MSG_WRITER_LEFT"] = "%s, the writer, has left the raid. Another officer can take over with /pl writer."
+L["MSG_WRITER_LEFT"] = "%s, the writer, has left the raid. Another officer can take over with {/pl writer}."
 L["MSG_GIVE"] = "Give %s to %s." -- items master loot couldn't hand out
 
 -- Trades and the guild.
@@ -352,12 +476,12 @@ L["LOG_CHECK_NONE"] = "Nothing in your log to check your ledger against yet."
 L["LOG_CHECK_OK"] = "Your ledger matches your log (%d items checked)."
 L["LOG_CHECK_BAD"] = "%s, %s: your ledger has %s, but your log says %s (as of %s)." -- player, item, ledger, log, date
 L["LOG_CHECK_RESYNC"] = "Checking %s's table against your log, for anything your old table had that this one doesn't:"
-L["LOG_CHECK_RESYNC_HINT"] = "If your log is right, /pl adjust puts it back: +/- pity, or won for a win."
+L["LOG_CHECK_RESYNC_HINT"] = "If your log is right, {/pl adjust} puts it back: +/- pity, or {won} for a win."
 L["LOG_CHECK_HINT"] = "A difference can be a change your log never saw, from a raid you weren't in or one that hasn't reached you yet."
 
 -- Warnings: in red in chat, and in the warning sign's tooltip. -----------------------------------------------------
 
-L["WARN_DIVERGED"] = "Your ledger differs from %s's at revision %d. If theirs is right, /pl resync %s replaces yours."
+L["WARN_DIVERGED"] = "Your ledger differs from %s's at revision %d. If theirs is right, {/pl resync %s} replaces yours."
 L["WARN_AWARD_FAILED"] = "The award couldn't be recorded: %s."
 L["WARN_UNSEEN_ROLL"] = "%s: the writer counted a roll of %d that you didn't see."
 L["WARN_DIFFERENT_ROLL"] = "%s: the writer counted a roll of %d, but you saw %d."

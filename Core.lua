@@ -2,6 +2,16 @@ local addonName, ns = ...
 
 ns.warnings = {}
 
+-- Names of things in the addon players see or click (tabs, buttons, options, commands) are marked {like this} in
+-- Locales, and shown in a colour of their own: Blizzard's for links and terms in its own text. Done once every
+-- locale file has loaded, so a translation's lines are marked too. Raid chat (ns.CHAT) can't carry colours.
+ns.NAME_COLOR = "ff71d5ff"
+for key, text in pairs(ns.L) do
+	if type(text) == "string" and text:find("{", 1, true) then
+		rawset(ns.L, key, (text:gsub("{(.-)}", "|c" .. ns.NAME_COLOR .. "%1|r")))
+	end
+end
+
 -- The options, kept in AceDB profiles (Options.lua).
 local DEFAULTS = {
 	rollTime = 30,
@@ -108,6 +118,8 @@ end
 ---@field classes table<string, string> class file names by GUID, to colour those names
 ---@field testOfficers table<string, boolean> players trusted as officers in test mode (TestCommands.lua)
 ---@field testMode boolean?
+---@field tutorialFinished boolean? every step on one of the test menu's pages has been done (TestMenu.lua)
+---@field tutorialTold boolean? told, after finishing it, that /pl test opens the test menu again
 ---@field minimapIcon table LibDBIcon's record of the minimap button: where it sits, and whether it's hidden
 ---@field collapsed table<string, boolean> My pity groups the player has collapsed
 ---@field position table? where the window was left
@@ -130,14 +142,40 @@ ns.On("ADDON_LOADED", function(name)
 	end
 end)
 
--- Test mode (TestCommands.lua, temporary) keeps its own ledger, so nothing done in it reaches the guild's.
-function ns.IsTestMode()
-	return ns.saved ~= nil and ns.saved.testMode == true
+function ns.InRaidInstance()
+	local _, instanceType = GetInstanceInfo()
+	return instanceType == "raid"
 end
 
--- Test mode can show the window as a member without officer powers sees it; it doesn't change what the addon does.
-function ns.ViewAsMember()
-	return ns.IsTestMode() and ns.saved.testViewAsMember == true
+-- Why test mode can't be on here, if it can't (5.5): "instance" inside a raid instance, "raidgroup" in a raid group.
+-- A party is fine.
+function ns.TestModeBlocked()
+	if ns.InRaidInstance() then return "instance" end
+	if IsInRaid() then return "raidgroup" end
+end
+
+-- Test mode (TestCommands.lua, and the test menu) keeps its own ledger, so nothing done in it reaches the guild's.
+-- It's never on in a raid: it turns itself off on the way in, and this covers the moment before.
+function ns.IsTestMode()
+	return ns.saved ~= nil and ns.saved.testMode == true and not ns.TestModeBlocked()
+end
+
+-- Test mode keeps to this client, sending the group nothing and showing raid chat only to you, unless someone in
+-- the group is trusted (/pl test trust), for testing with friends (5.5).
+function ns.TestIsPrivate()
+	if not ns.IsTestMode() then return false end
+	local trusted = ns.saved.testOfficers
+	for _, member in ipairs(ns.GroupMembers()) do
+		local name = member.name and ns.ShortName(member.name)
+		-- Trusted by the name typed after /pl test trust, which is a first name or a full one.
+		if name and not ns.IsMe(name) and (trusted[name] or trusted[name:match("^%S+")]) then return false end
+	end
+	return true
+end
+
+-- Test mode can show the window as a raider without officer powers sees it; it doesn't change what the addon does.
+function ns.ViewAsRaider()
+	return ns.IsTestMode() and ns.saved.testViewAsRaider == true
 end
 
 -- The ledger in use is the current guild's, once the client knows which guild that is (Pity.lua).

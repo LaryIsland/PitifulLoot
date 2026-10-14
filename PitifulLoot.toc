@@ -37,5 +37,6 @@ UI.lua
 MinimapButton.lua
 Options.lua
 Commands.lua
-# Temporary, for testing in game; remove before release.
+# Test mode and the test menu, a tutorial (its debugging commands are temporary; design document 5.5).
 TestCommands.lua
+TestMenu.lua

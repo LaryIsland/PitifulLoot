@@ -7,7 +7,10 @@ local L = ns.L
 
 local WIDTH, HEIGHT = 384, 524
 local ROW_HEIGHT = 52
-local VALUE_WIDTH = 104 -- room on the right of a row for its value
+local VALUE_WIDTH = 104 -- room on the right of a row you can roll or pass from, for its value and the pass button
+local VALUE_INSET = 12 -- the value and note, from the row's right edge
+local VALUE_GAP = 10 -- between a row's text and the value or note beside it
+local TEXT_MARGIN = 6 -- a row's text, from its right edge when nothing's beside it
 local DIVIDER_HEIGHT = 14
 local DETAIL_COLUMNS = 3 -- a roll row's details: its roll, pity and off-spec, each in a column of the same width
 -- Sized to their text ("Rerolled 62", "Pity +50", "Off-spec -20"), so the gaps between them look the same.
@@ -50,19 +53,22 @@ local BUTTON_MARGIN, PRIMARY_WIDTH, CANCEL_WIDTH = 10, 110, 88
 local frame
 local view = "session"
 local lines = {}
+-- A roll whose off-spec flag the writer just flipped keeps its place in the list while the mouse is on it, rather than
+-- jumping out from under the cursor as its total changes: { id, index, sid }.
+local held
 
 local function Colored(text, color)
 	if not color then return text end
 	return ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, text)
 end
 
--- What the window offers: writer and officer controls, unless test mode is showing it as a member sees it.
+-- What the window offers: writer and officer controls, unless test mode is showing it as a raider sees it.
 local function AsWriter()
-	return ns.AmWriter() and not ns.ViewAsMember()
+	return ns.AmWriter() and not ns.ViewAsRaider()
 end
 
 local function AsOfficer()
-	return ns.IsOfficer(ns.PlayerName()) and not ns.ViewAsMember()
+	return ns.IsOfficer(ns.PlayerName()) and not ns.ViewAsRaider()
 end
 
 -- The Raid tab is always there for officers; members can show it with an option, to look at.
@@ -88,6 +94,22 @@ local function ItemIcon(item)
 end
 
 -- How wide a font string's text is, however much room it's been given.
+-- An item's link without the brackets round its name, as the Loot and My Pity tabs and the window's header show it:
+-- still in its quality's colour, and still a link.
+local function ItemText(item)
+	return (ns.ItemLink(item):gsub("|h%[(.-)%]|h", "|h%1|h"))
+end
+
+-- The colour an item's icon is framed in, as the game's item buttons do it: none for qualities without one.
+local function QualityColor(item)
+	local quality = select(3, C_Item.GetItemInfo(item))
+	if not quality then return nil end
+	if ColorManager and ColorManager.GetColorDataForBagItemQuality then
+		return ColorManager.GetColorDataForBagItemQuality(quality)
+	end
+	return quality >= 2 and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality] or nil
+end
+
 local function TextWidth(fontString)
 	local width = fontString.GetUnboundedStringWidth and fontString:GetUnboundedStringWidth() or fontString:GetStringWidth()
 	return tonumber(width) or 0
@@ -134,7 +156,8 @@ local function ShowRefusal(out)
 	end
 	line.columns, line.detail = nil, L.REFUSED_DETAIL:format(reason)
 	if line.prompt then
-		line.tip = { L.ROLL_TIP_TITLE, sentence, refusal.why == "range" and L.REFUSED_RANGE_HINT or nil }
+		line.tip = { L.ROLL_TIP_TITLE, sentence, refusal.why == "range" and L.REFUSED_RANGE_ONLY or nil }
+		line.hints = refusal.why == "range" and { L.REFUSED_RANGE_HINT } or nil
 	else
 		line.tip = { ns.ColoredName(me), sentence }
 	end
@@ -145,6 +168,7 @@ local function SessionLines()
 	local out = {}
 	if not m then return out end
 	local canFlip = AsWriter() and m.state == "open" and not m.greed and not ns.ForEveryone(m.item)
+	local rolledAbove, divided = false, false
 	for _, row in ipairs(ns.SessionRows()) do
 		local id = row.id
 		local spec = ""
@@ -163,14 +187,19 @@ local function SessionLines()
 		if row.roll and row.offSpec then summary[#summary + 1] = L.ROW_TIP_OFFSPEC:format(ns.OFFSPEC_MODIFIER) end
 		local tip = { ns.ColoredName(id, row.name), table.concat(summary, " ") }
 		if row.stale then tip = { tip[1], L.ROW_TIP_BEFORE_TIE:format(tip[2]), waiting } end
-		if canFlip and row.roll then
-			tip[3] = row.offSpec and L.HINT_COUNT_MAIN or L.HINT_COUNT_OFF
-		end
-		local click = canFlip and row.roll and function() ns.ToggleOffSpec(id) end or nil
+		-- The writer left-clicks a roll to flip its off-spec flag, which the tooltip's click hint says.
+		local hints = canFlip and row.roll and { row.offSpec and L.HINT_COUNT_MAIN or L.HINT_COUNT_OFF } or nil
+		local click = canFlip and row.roll and function(button)
+			if button ~= "LeftButton" then return end
+			for i, line in ipairs(lines) do
+				if line.playerId == id then held = { id = id, index = i, sid = m.sid } end
+			end
+			ns.ToggleOffSpec(id)
+		end or nil
 		local mine = id == UnitGUID("player")
 		local prompt
 		if row.prompt then
-			tip = { L.ROLL_TIP_TITLE, L.ROLL_TIP }
+			tip, hints = { L.ROLL_TIP_TITLE, L.ROLL_TIP }, nil
 			click = ns.Roll
 			prompt = m.state == "reroll" and L.PROMPT_REROLL or L.PROMPT_ROLL
 			if row.autoRollAt then prompt = L.PROMPT_AUTO_ROLL:format(math.max(math.ceil(row.autoRollAt - GetTime()), 1)) end
@@ -191,6 +220,14 @@ local function SessionLines()
 		if m.contenders and not row.contender and out[1] and out[#out].contender then
 			out[#out + 1] = { divider = true }
 		end
+		-- Otherwise, one between those who've rolled and those who haven't (or passed), when there are both; your own
+		-- row at the top while you can roll stays above them.
+		local pinned = row.prompt or row.rolling
+		if not m.contenders and not pinned and not row.roll and rolledAbove and not divided then
+			out[#out + 1] = { divider = true }
+			divided = true
+		end
+		if row.roll and not pinned then rolledAbove = true end
 		out[#out + 1] = {
 			mine = mine,
 			mineColor = mine and RAID_CLASS_COLORS[ns.ClassOf(id) or ""] or nil,
@@ -205,17 +242,20 @@ local function SessionLines()
 			valueColor = row.stale and GREY or nil,
 			note = note,
 			prompt = prompt,
-			pass = row.prompt and ns.Pass or nil,
+			pass = row.prompt and m.state ~= "reroll" and ns.Pass or nil, -- not in a reroll, where the earlier roll is
 			passTip = m.state == "reroll" and L.PASS_TIP_REROLL or L.PASS_TIP_ROLL,
 			winner = row.winner,
 			contender = row.contender,
 			counted = mine and row.roll ~= nil and not row.stale or nil, -- your own row, with a roll that counts
 			faded = ((not row.roll or row.stale) and not (row.prompt or row.rolling)) or row.passed,
 			tip = tip,
+			hints = hints,
 			click = click,
+			playerId = id,
 		}
 	end
-	-- A roll you can't take part in is still shown, with your own row at the top saying why, so you can follow it.
+	-- A roll you can't take part in is still shown, with your own row saying why, so you can follow it: at the top, or
+	-- in a reroll you're not in, at the top of everyone else's, below the tied players.
 	local why = ns.WhyCantRoll()
 	local me = UnitGUID("player")
 	local listed = false
@@ -223,7 +263,15 @@ local function SessionLines()
 		if line.mine then listed = true end
 	end
 	if why and not listed then
-		table.insert(out, 1, {
+		local at = 1
+		if m.contenders then
+			while out[at] and out[at].contender do at = at + 1 end
+			if at > 1 then
+				if not (out[at] and out[at].divider) then table.insert(out, at, { divider = true }) end
+				at = at + 1
+			end
+		end
+		table.insert(out, at, {
 			mine = true,
 			cells = { name = ns.NameOf(me), pity = "", spec = "", roll = "-", total = "", odds = "" },
 			title = ns.ColoredName(me),
@@ -233,6 +281,16 @@ local function SessionLines()
 		})
 	end
 	ShowRefusal(out)
+	-- A roll the writer just flipped stays where it was, under the mouse (the window lets it go once the mouse is off).
+	if held and held.sid == m.sid then
+		for i, line in ipairs(out) do
+			if line.playerId == held.id and i ~= held.index then
+				table.remove(out, i)
+				table.insert(out, math.min(held.index, #out + 1), line)
+				break
+			end
+		end
+	end
 	return out
 end
 
@@ -263,7 +321,8 @@ local function TradeLines(out)
 			if pending.from and not ns.IsMe(pending.from) then detail[#detail + 1] = L.TRADE_FROM:format(ns.ColoredName(pending.from)) end
 			local click, hints
 			if officer then
-				local canTrade = left > 0 and pending.id ~= me and ns.HoldsItem(pending.item)
+				-- In test mode the loot isn't really in your bags, so it's traded as if it were.
+				local canTrade = left > 0 and pending.id ~= me and (ns.HoldsItem(pending.item) or ns.IsTestMode())
 				hints = {}
 				if canTrade then hints[1] = L.HINT_TRADE:format(ns.ColoredName(pending.id)) end
 				hints[#hints + 1] = left > 0 and L.HINT_TRADE_DONE or L.HINT_TRADE_CLEAR
@@ -276,9 +335,9 @@ local function TradeLines(out)
 				end
 			end
 			rows[#rows + 1] = {
-				cells = { name = ns.ItemLink(pending.item), pity = "", spec = "trade" },
+				cells = { name = ItemText(pending.item), pity = "", spec = "trade" },
 				icon = ItemIcon(pending.item),
-				title = ns.ItemLink(pending.item),
+				title = ItemText(pending.item),
 				detail = table.concat(detail, "  ·  "),
 				value = TimeLeft(left),
 				valueColor = left < TRADE_WARNING and RED_FONT_COLOR or nil,
@@ -449,9 +508,9 @@ local function LootLines()
 			end
 			local name = C_Item.GetItemInfo(item)
 			out[#out + 1] = {
-				cells = { name = ns.ItemLink(item), pity = "x" .. entry.copies, spec = entry.status },
+				cells = { name = ItemText(item), pity = "x" .. entry.copies, spec = entry.status },
 				icon = ItemIcon(item),
-				title = done and Colored(name or ns.ItemLink(item), GREY) or ns.ItemLink(item),
+				title = done and Colored(name or ItemText(item), GREY) or ItemText(item),
 				detail = table.concat(detail, "  ·  "),
 				roles = suits and RoleList(suits) or nil,
 				value = value,
@@ -519,9 +578,9 @@ local function PityLines()
 		raids[raid].bosses[boss] = raids[raid].bosses[boss] or {}
 		local chance = pity and pity > 0 and ns.HeadToHead(pity) or nil
 		table.insert(raids[raid].bosses[boss], {
-			cells = { name = ns.ItemLink(item), pity = pity and ("+" .. pity) or "", spec = note },
+			cells = { name = ItemText(item), pity = pity and ("+" .. pity) or "", spec = note },
 			icon = ItemIcon(item),
-			title = ns.ItemLink(item),
+			title = ItemText(item),
 			detail = note,
 			value = pity and ("+" .. pity) or "",
 			note = chance and L.PITY_ODDS:format(chance * 100 + 0.5) or nil,
@@ -579,6 +638,8 @@ local function ShowTooltip(owner, line)
 	if not line.item and not line.tip then return end
 	GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
 	if line.item then
+		-- Compared with what you're wearing only while Shift's held, whatever the game's Always Compare Items says.
+		if GameTooltip_SuppressAutomaticCompareItem then GameTooltip_SuppressAutomaticCompareItem(GameTooltip) end
 		GameTooltip:SetItemByID(line.item)
 	else
 		GameTooltip_SetTitle(GameTooltip, line.tip[1])
@@ -608,6 +669,9 @@ local function BuildRow(row)
 	row.Icon = row:CreateTexture(nil, "ARTWORK")
 	row.Icon:SetSize(34, 34)
 	row.Icon:SetPoint("LEFT", 9, 0)
+	row.IconBorder = row:CreateTexture(nil, "OVERLAY")
+	row.IconBorder:SetTexture("Interface\\Common\\WhiteIconFrame")
+	row.IconBorder:SetAllPoints(row.Icon)
 	row.Title = row:CreateFontString(nil, "ARTWORK", "GameFontNormalMed1")
 	row.Title:SetJustifyH("LEFT")
 	row.Title:SetWordWrap(false)
@@ -630,9 +694,9 @@ local function BuildRow(row)
 	end
 	-- The value on the top line, and a note on the bottom line, level with the details.
 	row.Value = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
-	row.Value:SetPoint("TOPRIGHT", -12, -9)
+	row.Value:SetPoint("TOPRIGHT", -VALUE_INSET, -9)
 	row.Note = row:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-	row.Note:SetPoint("BOTTOMRIGHT", -12, 11)
+	row.Note:SetPoint("BOTTOMRIGHT", -VALUE_INSET, 11)
 	row.Note:SetTextColor(GREY.r, GREY.g, GREY.b)
 	row.Check = row:CreateTexture(nil, "OVERLAY")
 	row.Check:SetAtlas("lootroll-icon-checkmark", true)
@@ -642,6 +706,7 @@ local function BuildRow(row)
 	-- the row, which rolls.
 	row.Pass = CreateFrame("Button", nil, row)
 	row.Pass:SetSize(PASS_SIZE, PASS_SIZE)
+	row.Pass:RegisterForClicks("LeftButtonDown") -- as the row's own click, so a redraw can't lose it
 	row.Pass:SetPoint("TOPRIGHT", -8, -5)
 	row.Pass:SetNormalAtlas("lootroll-toast-icon-pass-up")
 	row.Pass:SetHighlightAtlas("lootroll-toast-icon-pass-highlight", "ADD")
@@ -659,9 +724,14 @@ local function BuildRow(row)
 	end)
 	row.Pass:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	-- A left-click acts as the button goes down: the list redraws often during a roll, handing its rows out again,
+	-- and a click that waited for the button to come back up was lost whenever that happened in between.
+	row:RegisterForClicks("LeftButtonDown", "RightButtonUp")
 	row:SetScript("OnClick", function(self, button) if self.line and self.line.click then self.line.click(button, self) end end)
 	row:SetScript("OnEnter", function(self) if self.line then ShowTooltip(self, self.line) end end)
+	-- The game redraws a hovered button's tooltip through this, as its own item buttons do, so Shift's comparisons
+	-- show (and the tooltip stays) rather than the tooltip being rebuilt without us.
+	row.UpdateTooltip = function(self) if self.line then ShowTooltip(self, self.line) end end
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
@@ -674,8 +744,25 @@ local function InitRow(row, line)
 		row.Icon:SetTexture(line.icon)
 		left = 50
 	end
-	-- Text runs to the right edge unless the row has a value, a note or a button there.
-	local right = ((line.value or "") ~= "" or (line.note or "") ~= "" or line.prompt or line.pass) and -VALUE_WIDTH or -12
+	local border = line.icon and line.item and QualityColor(line.item)
+	row.IconBorder:SetShown(border ~= nil)
+	if border then row.IconBorder:SetVertexColor(border.r, border.g, border.b) end
+	-- The name runs up to the value beside it, and the details up to the note beside them, or else to the right
+	-- edge; a row you can roll or pass from keeps room for those all along.
+	row.Value:SetText(line.value or "")
+	row.Note:SetText(line.note or "")
+	local right, detailRight = -TEXT_MARGIN, -TEXT_MARGIN
+	if line.prompt or line.pass then
+		right, detailRight = -VALUE_WIDTH, -VALUE_WIDTH
+	else
+		local beside = (line.value or "") ~= "" and TextWidth(row.Value) or 0
+		-- A winner's checkmark sits beside the value, or at the right edge.
+		if line.winner then beside = beside + (beside > 0 and 4 or 0) + (tonumber(row.Check:GetWidth()) or 0) end
+		if beside > 0 then right = -(VALUE_INSET + beside + VALUE_GAP) end
+		if (line.note or "") ~= "" then detailRight = -(VALUE_INSET + TextWidth(row.Note) + VALUE_GAP) end
+		-- Without a value, the checkmark is in the middle of the row's height, beside the details too.
+		if line.winner and (line.value or "") == "" then detailRight = math.min(detailRight, right) end
+	end
 	row.Title:ClearAllPoints()
 	row.Title:SetPoint("TOPLEFT", left, -9)
 	row.Title:SetPoint("RIGHT", right, 0)
@@ -698,7 +785,7 @@ local function InitRow(row, line)
 	if indent > 0 then indent = indent + ROLE_ICON_INSET + (ROLE_ICON_SIZE - ROLE_ICON_STEP) + ROLE_ICON_GAP end
 	row.Detail:ClearAllPoints()
 	row.Detail:SetPoint("TOPLEFT", row.Title, "BOTTOMLEFT", indent, -6)
-	row.Detail:SetPoint("RIGHT", right, 0)
+	row.Detail:SetPoint("RIGHT", detailRight, 0)
 	row.Detail:SetText(line.detail or "")
 	row.Detail:SetShown(line.columns == nil)
 	-- Columns the same width on every row, so the rolls, pity and off-spec line up down the list.
@@ -711,17 +798,15 @@ local function InitRow(row, line)
 		column:SetText(line.columns and line.columns[i] or "")
 		column:SetShown(line.columns ~= nil)
 	end
-	row.Value:SetText(line.value or "")
 	local valueColor = line.valueColor or line.mineColor or (line.contender and NORMAL_FONT_COLOR) or HIGHLIGHT_FONT_COLOR
 	row.Value:SetTextColor(valueColor.r, valueColor.g, valueColor.b)
-	row.Note:SetText(line.note or "")
 	row.Pass:SetShown(line.pass ~= nil)
 	-- The checkmark sits beside the value, or in the middle of the right edge when there's no value.
 	row.Check:ClearAllPoints()
 	if (line.value or "") ~= "" then
 		row.Check:SetPoint("RIGHT", row.Value, "LEFT", -4, 0)
 	else
-		row.Check:SetPoint("RIGHT", -12, 0)
+		row.Check:SetPoint("RIGHT", -VALUE_INSET, 0)
 	end
 	-- The prompt is centred on the row, unless that would run it into your name or details.
 	row.Prompt:SetShown(line.prompt ~= nil)
@@ -834,7 +919,7 @@ local function UpdateHeader()
 	local m = ns.live.mirror
 	if m then
 		frame:SetPortraitToAsset(ItemIcon(m.item) or ADDON_ICON)
-		local text = ns.ItemLink(m.item)
+		local text = ItemText(m.item)
 		if m.copies > 1 then text = text .. Colored(" x" .. m.copies, HIGHLIGHT_FONT_COLOR) end
 		if m.greed then text = text .. Colored(L.HEADER_GREED, HIGHLIGHT_FONT_COLOR) end
 		frame.ItemName:SetText(text)
@@ -842,7 +927,7 @@ local function UpdateHeader()
 	else
 		frame:SetPortraitToAsset(ADDON_ICON)
 		frame.ItemName:SetText("")
-		frame.RoundText:SetText(ns.live.writer and L.HEADER_WAITING:format(ns.ColoredName(ns.live.writer)) or "")
+		frame.RoundText:SetText(ns.live.writer and L.HEADER_WAITING:format(ns.ColoredName(ns.WriterShownAs())) or "")
 	end
 	UpdateTimer()
 end
@@ -857,14 +942,16 @@ local function UpdateFooter()
 		if ns.SyncBusy() then
 			ledger = L.FOOTER_REVISION_SYNCING:format(head.rev)
 		elseif type(head.by) == "string" and head.by ~= "" then
-			ledger = L.FOOTER_REVISION_BY:format(head.rev, ns.ColoredName(head.by))
+			-- On the test menu's raider page, what you recorded is the made-up officer's, as the writer is.
+			local by = head.by == UnitGUID("player") and ns.TestOfficer() or head.by
+			ledger = L.FOOTER_REVISION_BY:format(head.rev, ns.ColoredName(by))
 		else
 			ledger = L.FOOTER_REVISION:format(head.rev)
 		end
 	else
 		ledger = L.FOOTER_NO_LEDGER
 	end
-	local writer = ns.live.writer and L.WRITER:format(ns.ColoredName(ns.live.writer)) or L.WRITER_NONE
+	local writer = ns.live.writer and L.WRITER:format(ns.ColoredName(ns.WriterShownAs())) or L.WRITER_NONE
 	local status = frame.Status
 	local primary, cancel = frame.Primary:IsShown(), frame.Cancel:IsShown()
 	status:ClearAllPoints()
@@ -878,7 +965,7 @@ local function UpdateFooter()
 
 	local title = "Pitiful Loot"
 	if ns.IsTestMode() then
-		title = title .. " " .. Colored(ns.ViewAsMember() and "(test mode, as a member)" or "(test mode)", RED_FONT_COLOR)
+		title = title .. " " .. Colored(ns.ViewAsRaider() and L.TEST_WINDOW_TITLE_AS_RAIDER or L.TEST_WINDOW_TITLE, RED_FONT_COLOR)
 	end
 	frame:SetTitle(title)
 	frame.Alert:SetShown(ns.warnings[1] ~= nil)
@@ -901,7 +988,7 @@ local function UpdateButtons()
 		label, action = L.BUTTON_KEEP, ns.KeepToSell
 	elseif writer and decided and not ns.IsBoE(m.item) then
 		label, action = L.BUTTON_DISENCHANT, ns.Disenchant
-	elseif not writer and IsInGroup() and AsOfficer() then
+	elseif not writer and (IsInGroup() or ns.IsTestMode()) and AsOfficer() then
 		label, action = L.BUTTON_BE_WRITER, ns.ClaimWriter
 	end
 	frame.Primary:SetShown(label ~= nil)
@@ -954,7 +1041,16 @@ function ns.RefreshWindow()
 	frame.Options:SetShown(panel == frame.Options)
 	frame.Raid:SetShown(panel == frame.Raid)
 	if panel then panel:Refresh() end
+	-- Redrawing hands the list's rows out again, which hides a row's tooltip (as when Shift's comparisons bring in item
+	-- data); the row under the mouse gets it back.
+	local owner = GameTooltip:IsShown() and GameTooltip:GetOwner()
+	local hadTip = type(owner) == "table" and rawget(owner, "line") ~= nil
 	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
+	if hadTip then
+		frame.ScrollBox:ForEachFrame(function(row)
+			if row.line and row:IsMouseOver() then ShowTooltip(row, row.line) end
+		end)
+	end
 	local empty = EMPTY[view]
 	if view == "loot" and ns.loot.groups[1] then empty = L.EMPTY_LOOT_HIDDEN end
 	if view == "raid" and (IsInGroup() or ns.IsTestMode()) then empty = "" end
@@ -963,6 +1059,11 @@ function ns.RefreshWindow()
 		empty = (m.state == "open" or m.state == "reroll") and L.EMPTY_NOT_ROLLED_YET or L.EMPTY_NO_ONE_ROLLED
 	end
 	frame.Empty:SetText(lines[1] and "" or empty)
+	-- With nothing to show on the Roll tab and no raid on, the way to the test raid, for anyone new: gone once they've
+	-- finished it (5.5).
+	local menu = ns.TestMenu and ns.TestMenu()
+	frame.TryTest:SetShown(view == "session" and not lines[1] and not IsInRaid() and not (menu and menu:IsShown())
+		and not ns.saved.tutorialFinished)
 	UpdateHeader()
 	UpdateButtons()
 	UpdateFooter()
@@ -1151,7 +1252,8 @@ local RAID_PANEL_WIDTH = WIDTH - 50
 local RAID_COLUMN_WIDTH = (RAID_PANEL_WIDTH - RAID_GAP) / 2
 local INSPECT_BUTTON_WIDTH = 120
 
-local INSPECTING_COLOR = LIGHTBLUE_FONT_COLOR or { r = 0.53, g = 0.67, b = 1 }
+local UNCHECKED_COLOR = LIGHTBLUE_FONT_COLOR or { r = 0.53, g = 0.67, b = 1 }
+local INSPECTING_COLOR = CreateColor(1, 0.5, 0.1) -- orange: an inspect under way, for its bar and question mark
 local DOT_TIME = 0.35 -- seconds each step of the "Inspecting..." dots shows for
 local HIDDEN_DOTS = { r = 0, g = 0, b = 0 } -- the tooltip's background
 local hoveredRaider -- the raider row whose tooltip is showing, to animate it (see the window's OnUpdate)
@@ -1163,7 +1265,7 @@ local function RaiderState(member)
 	if ns.IsInspecting(member.guid) or not ns.RoleReason(member.guid) then return "unchecked" end
 	return "problem"
 end
-local STATE_COLORS = { unchecked = INSPECTING_COLOR, problem = RED_FONT_COLOR }
+local STATE_COLORS = { unchecked = UNCHECKED_COLOR, problem = RED_FONT_COLOR }
 local STATE_TINT_ALPHA = { unchecked = 0.25, problem = 0.35 }
 
 local function QuestionMark(state)
@@ -1191,7 +1293,7 @@ local function ShowRaiderTooltip(owner, member)
 	if (source == "officer" or source == "known") and ns.SETTLED_REASONS[reasonKey] then reasonKey = nil end
 	local reason = ns.UNKNOWN_REASONS[reasonKey or ""]
 	if busy then
-		GameTooltip_AddColoredLine(GameTooltip, InspectingText(), INSPECTING_COLOR)
+		GameTooltip_AddColoredLine(GameTooltip, InspectingText(), UNCHECKED_COLOR)
 	elseif reason then
 		GameTooltip_AddErrorLine(GameTooltip, reason, true)
 	end
@@ -1283,9 +1385,12 @@ local function InitRaiderRow(row, member)
 	local color = STATE_COLORS[state]
 	row.Unknown:SetShown(color ~= nil)
 	row.Mark:SetShown(color ~= nil)
+	-- The bar and the question mark turn orange while their talents are being inspected; only how they look changes.
+	row.inspecting = color ~= nil and ns.IsInspecting(member.guid) or nil
 	if color then
-		row.Unknown:SetColorTexture(color.r, color.g, color.b, STATE_TINT_ALPHA[state])
-		row.Mark:SetTextColor(color.r, color.g, color.b)
+		local tint = row.inspecting and INSPECTING_COLOR or color
+		row.Unknown:SetColorTexture(tint.r, tint.g, tint.b, STATE_TINT_ALPHA[state])
+		row.Mark:SetTextColor(tint.r, tint.g, tint.b)
 	end
 	row.Icon:SetShown(role ~= nil)
 	if role then row.Icon:SetAtlas(ROLE_ICONS[role]) end
@@ -1469,16 +1574,33 @@ dragger:SetScript("OnUpdate", function()
 	frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x + grab.x, y + grab.y)
 end)
 
+-- Resizing by hand too: the game's StartSizing could likewise go by a stale point, so the handle jumped away from the
+-- mouse on every resize until the window was next moved. Anchored by its top left, the window's foot follows the
+-- mouse up and down, within its height limits and the bottom of the screen.
+local sizer = CreateFrame("Frame")
+sizer:Hide()
+local sizeFrom -- the mouse's height and the window's, when the handle went down
+
+sizer:SetScript("OnUpdate", function()
+	local _, y = Cursor()
+	local height = sizeFrom.height + sizeFrom.y - y
+	frame:SetHeight(math.max(MIN_HEIGHT, math.min(height, MAX_HEIGHT, frame:GetTop() or MAX_HEIGHT)))
+end)
+
+local function StartResizing()
+	AnchorWhereDrawn()
+	local _, y = Cursor()
+	sizeFrom = { y = y, height = frame:GetHeight() }
+	sizer:Show()
+end
+
 -- Ends a move or resize, as the mouse lets go or the window closes during one. Kept on screen, the window may be
 -- drawn somewhere other than the mouse left it, so that's where it's kept.
 local function StopMoving()
-	grab = nil
-	if not (dragger:IsShown() or frame.sizing) then return end
+	grab, sizeFrom = nil, nil
+	if not (dragger:IsShown() or sizer:IsShown()) then return end
 	dragger:Hide()
-	if frame.sizing then
-		frame.sizing = nil
-		frame:StopMovingOrSizing()
-	end
+	sizer:Hide()
 	AnchorWhereDrawn()
 	SavePosition()
 end
@@ -1518,7 +1640,7 @@ local function Create()
 	MakeDragHandle(frame)
 	MakeDragHandle(frame.TitleContainer)
 	frame:HookScript("OnHide", StopMoving)
-	frame.Dragger = dragger
+	frame.Dragger, frame.Sizer = dragger, sizer
 	table.insert(UISpecialFrames, "PitifulLootFrame")
 	frame:SetTitle("Pitiful Loot")
 
@@ -1564,6 +1686,7 @@ local function Create()
 		if not m then return end
 		ShowTooltip(self, { item = m.item, hints = CanSetRoles(m) and { L.HINT_SET_ROLES } or nil })
 	end)
+	itemHit.UpdateTooltip = itemHit:GetScript("OnEnter") -- as the list's rows do, for Shift's comparisons
 	itemHit:SetScript("OnClick", function(self)
 		local m = ns.live.mirror
 		if CanSetRoles(m) then ShowItemMenu(self, m.item) end
@@ -1640,9 +1763,7 @@ local function Create()
 	handle:SetAllPoints()
 	resize:SetScript("OnMouseDown", function(_, button)
 		if button ~= "LeftButton" then return end
-		AnchorWhereDrawn()
-		frame.sizing = true
-		frame:StartSizing("BOTTOM")
+		StartResizing()
 	end)
 	resize:SetScript("OnMouseUp", function(_, button)
 		if button ~= "LeftButton" then return end
@@ -1668,6 +1789,17 @@ local function Create()
 	frame.Empty:SetPoint("TOP", frame.ScrollBox, "TOP", 0, -24)
 	frame.Empty:SetWidth(WIDTH - 60)
 	frame.Empty:SetTextColor(GREY.r, GREY.g, GREY.b)
+	local tryTest = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	tryTest:SetPoint("CENTER", frame.ScrollBox, "CENTER")
+	tryTest:SetText(L.EMPTY_TRY_TEST_BUTTON)
+	tryTest:SetSize(TextWidth(tryTest:GetFontString()) + 40, 22)
+	local tryText = tryTest:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	tryText:SetPoint("BOTTOM", tryTest, "TOP", 0, 6)
+	tryText:SetTextColor(GREY.r, GREY.g, GREY.b)
+	tryText:SetText(L.EMPTY_TRY_TEST)
+	tryTest:SetScript("OnClick", function() ns.ShowTestMenu() end)
+	tryTest:Hide()
+	frame.TryTest = tryTest
 
 	frame.Status = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
 	frame.Status:SetJustifyH("LEFT")
@@ -1708,6 +1840,19 @@ local function Create()
 		elapsed = elapsed + delta
 		if elapsed < 0.1 then return end
 		elapsed = 0
+		-- A flipped roll held in place is let go, and the list sorted again, once the mouse is off it.
+		if held then
+			local over = false
+			if view == "session" then
+				frame.ScrollBox:ForEachFrame(function(row)
+					if row.line and row.line.playerId == held.id and row:IsMouseOver() then over = true end
+				end)
+			end
+			if not over then
+				held = nil
+				ns.RefreshWindow()
+			end
+		end
 		-- The dots on a hovered raider's "Inspecting..." count up.
 		local row = hoveredRaider
 		if row and row.member and GameTooltip:IsOwned(row) and ns.IsInspecting(row.member.guid) then

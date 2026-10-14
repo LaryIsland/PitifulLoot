@@ -3,8 +3,7 @@ local L = ns.L
 
 local HELP = {
 	L.HELP_TOGGLE, L.HELP_OPTIONS, L.HELP_WRITER, L.HELP_ROLL, L.HELP_ROUND, L.HELP_DISENCHANT, L.HELP_SELL, L.HELP_PASS,
-	L.HELP_OS, L.HELP_PITY, L.HELP_LEAVE, L.HELP_ADJUST, L.HELP_RESYNC, L.HELP_STATUS, L.HELP_LOG,
-	"/pl test - commands for trying the addon out in game (temporary)",
+	L.HELP_OS, L.HELP_PITY, L.HELP_LEAVE, L.HELP_ADJUST, L.HELP_RESYNC, L.HELP_STATUS, L.HELP_LOG, L.HELP_TEST,
 }
 
 -- Splits arguments, keeping an item link (which has spaces in its name) as one.

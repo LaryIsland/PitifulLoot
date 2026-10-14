@@ -27,6 +27,7 @@ end
 -- Sends `data` to handlers registered for `kind` on other clients.
 function ns.Send(prefix, kind, data, channel, target)
 	if prefix == ns.PREFIX_SYNC and ns.IsTestMode() then return end -- a test ledger never leaves this client
+	if ns.TestIsPrivate() then return end -- nor anything else in test mode, unless someone in the group is trusted
 	ns.Capture("send", prefix, kind, data, channel, target)
 	comm:SendCommMessage(prefix, Encode(kind, data), channel, target, PRIORITY[prefix])
 end

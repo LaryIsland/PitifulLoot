@@ -64,10 +64,23 @@ end
 -- send them, so nobody misses a roll.
 local CHANNEL_LABELS = { PARTY = "Party", RAID = "Raid", RAID_WARNING = "Raid Warning" }
 
--- Test mode on your own (TestCommands.lua, temporary): shows what the raid would see, as if you led it. Each line
--- goes in your chat in its channel's colour, and headlines also appear in the middle of the screen like raid warnings.
+-- The name you go by as the writer, on screen and in raid chat: your own, or on the test menu's raider page the
+-- made-up officer's (TestCommands.lua), so it reads as it would in a raid.
+local function MyWriterName()
+	local _, name = ns.TestOfficer()
+	return name or ns.PlayerName()
+end
+
+-- The writer as the window shows them (a name, or the made-up officer's GUID, for ns.ColoredName).
+function ns.WriterShownAs()
+	return (ns.TestOfficer()) or live.writer
+end
+
+-- Test mode, unless someone in the group is trusted (ns.TestIsPrivate): shows what the group would see, only to you;
+-- on your own, as if you led a raid. Each line goes in your chat in its channel's colour, and headlines also appear
+-- in the middle of the screen like raid warnings.
 local function Preview(text, channel)
-	local line = ("[%s] %s: %s"):format(CHANNEL_LABELS[channel], ns.PlayerName(), text)
+	local line = ("[%s] %s: %s"):format(CHANNEL_LABELS[channel], MyWriterName(), text)
 	local color = C_ChatInfo.GetColorForChatType and C_ChatInfo.GetColorForChatType(channel)
 	if color then line = ("|cff%02x%02x%02x%s|r"):format(color.r * 255, color.g * 255, color.b * 255, line) end
 	DEFAULT_CHAT_FRAME:AddMessage(line)
@@ -84,7 +97,7 @@ local function Announce(text, headline)
 		or IsInRaid() and (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player") or IsEveryoneAssistant())
 	if headline and ns.settings.raidWarning and canWarn then channel = "RAID_WARNING" end
 	ns.Capture("announce", channel, text)
-	if not grouped then return Preview(text, channel) end
+	if not grouped or ns.TestIsPrivate() then return Preview(text, channel) end
 	ChatThrottleLib:SendChatMessage("NORMAL", ns.PREFIX_LIVE, text, channel)
 end
 
@@ -521,6 +534,7 @@ local function WhisperRefusal(m, member, why, low, high)
 		return
 	end
 	if IsInGroup() and member.guid == UnitGUID("player") then return end
+	if ns.TestIsPrivate() and member.guid ~= UnitGUID("player") then return end -- test mode keeps to this client
 	m.whispered = m.whispered or {}
 	if m.whispered[member.guid] then return end
 	m.whispered[member.guid] = true
@@ -597,9 +611,9 @@ function ns.ClaimWriter()
 	if m and (IsActive(m) or m.state == "decided") then
 		engine = Rebuild(m, m.state == "decided")
 		if IsActive(m) then ScheduleClose(math.max((m.ends or GetTime()) - GetTime(), 5)) end
-		Announce(CHAT.TAKEN_OVER:format(ns.PlayerName(), ns.ItemLink(m.item)))
+		Announce(CHAT.TAKEN_OVER:format(MyWriterName(), ns.ItemLink(m.item)))
 	else
-		Announce(CHAT.RUNNING_ROLLS:format(ns.PlayerName()))
+		Announce(CHAT.RUNNING_ROLLS:format(MyWriterName()))
 	end
 	rolesSent = nil
 	ns.Fire("ROLES_CHANGED")
@@ -958,16 +972,26 @@ ns.Receive(LIVE, "pass", function(d, sender)
 	Passed(m, member.guid, d.round)
 end)
 
--- For the test commands: counts a roll from a made-up player, as if the writer had seen their /roll.
-function ns.CountTestRoll(id, name, roll, pity, offSpec)
+-- For the test commands: counts a roll from a made-up player, as if the writer had seen their /roll. `unknown`: the
+-- off-spec flag comes from a fallback role.
+function ns.CountTestRoll(id, name, roll, pity, offSpec, unknown)
 	local m = live.mirror
 	if not ns.AmWriter() or not engine or not IsActive(m) then return false, "no roll is open" end
 	if m.round > 1 then pity = nil end
 	local ok, why = engine:AddRoll(id, roll, pity, offSpec)
 	if not ok then return false, why end
-	QueueRoll({ id = id, name = name, roll = roll, pity = pity, os = offSpec or nil })
+	QueueRoll({ id = id, name = name, roll = roll, pity = pity, os = offSpec or nil, unknown = unknown or nil })
 	CloseIfAllRerolled(m)
 	return true
+end
+
+-- Test mode turning off (TestCommands.lua): stops being the writer without telling anyone, and drops the roll, so
+-- nothing run in test mode carries on in a real group.
+function ns.StopTestWriting()
+	if not ns.AmWriter() then return end
+	StopWriting()
+	live.writer, live.mirror = nil, nil
+	ns.Fire("SESSION_CHANGED")
 end
 
 -- Handover and late joiners ---------------------------------------------------------------------------------------
@@ -1120,6 +1144,13 @@ function ns.SessionRows()
 	-- Passes: in an opening round, by anyone; in a reroll, by those tied in this round.
 	for id, round in pairs(m.passed) do
 		if round == m.round or not (m.contenders and m.contenders[id]) then Row(id).passed = true end
+	end
+	-- While the opening round's on, everyone in the group who could roll is listed, the ones yet to roll at the pity
+	-- known for them (none, if it isn't).
+	if m.state == "open" then
+		for _, member in ipairs(ns.GroupMembers()) do
+			if member.guid and ns.MayRollOn(member.guid, m.item, m.greed) then Row(member.guid) end
+		end
 	end
 	-- Your own /roll shows as soon as the game says what you rolled, worked out as the writer will count it, rather than
 	-- half a second later when the writer's count arrives, so your row goes straight to its place. Between clicking and
