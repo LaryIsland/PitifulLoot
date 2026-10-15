@@ -452,10 +452,11 @@ end
 local function Changed(kind)
 	RefreshOdds()
 	if kind == "open" or kind == "reroll" then ScheduleAutoRoll(kind) end
-	-- A roll you can take part in (or are running) opens the window on the Roll tab.
+	-- A roll you can take part in (or are running) opens the window on the Roll tab; one the writer's queue starts,
+	-- only if you can take part, as for anyone. Either way it's scrolled to the top, where the roll starts.
 	if (kind == "open" or kind == "reroll") and ns.settings.autoShow and ns.ShowWindow
-		and (ns.CanRoll() or (kind == "open" and ns.AmWriter())) then
-		ns.ShowWindow("session")
+		and (ns.CanRoll() or (kind == "open" and ns.AmWriter() and not ns.QueueStarting())) then
+		ns.ShowWindow("session", true)
 	end
 	ns.Fire("ROLL_EVENT", kind, live.mirror)
 	ns.Fire("SESSION_CHANGED")
@@ -813,14 +814,26 @@ function ns.CloseRound()
 		return
 	end
 	Emit("decided", { sid = m.sid, winners = ns.Copy(engine.winners) })
+	local auto = ns.settings.autoFinish or ns.AUTO_FINISH.OFF
 	if not engine.winners[1] then
 		Announce(CHAT.NO_ONE_ROLLED:format(ns.ItemLink(m.item)), true)
 		engine = nil
+		-- Auto-award's Everything takes the next step, as the writer's button would: a BoE's greed roll, then keeping
+		-- it to sell; disenchanting anything else.
+		if auto >= ns.AUTO_FINISH.ALL then
+			if not ns.IsBoE(m.item) then
+				ns.Disenchant()
+			elseif m.greed then
+				ns.KeepToSell()
+			else
+				ns.StartRoll(m.item, m.copies, true)
+			end
+		end
 		return
 	end
 	Announce(CHAT.GOES_TO:format(ns.ItemLink(m.item), NameList(engine.winners)), true)
 	for _, id in ipairs(engine.winners) do Announce(Breakdown(m, id)) end
-	if ns.settings.autoAward then ns.Award() end
+	if auto >= ns.AUTO_FINISH.AWARDS then ns.Award() end
 end
 
 -- Hands out the item and records the result, which is when the losers gain pity (4.1): the writer adds it to its table
@@ -1105,6 +1118,15 @@ function ns.CountTestRoll(id, name, roll, pity, offSpec, unknown)
 	return true
 end
 
+-- For the test commands: a made-up player passing, as if the writer had seen them say "pass" in raid chat.
+function ns.CountTestPass(id)
+	local m = live.mirror
+	if not ns.AmWriter() or not engine or m.passed[id] == m.round or not MayPass(m, id, m.round) then return false end
+	SendLive("passed", { sid = m.sid, round = m.round, id = id })
+	Passed(m, id, m.round)
+	return true
+end
+
 -- Test mode turning off (TestCommands.lua): stops being the writer without telling anyone, and drops the roll, so
 -- nothing run in test mode carries on in a real group.
 function ns.StopTestWriting()
@@ -1188,6 +1210,7 @@ ns.Receive(LIVE, "query", function(d, sender)
 	SendLive("state", {
 		mirror = m, left = live.mirror and live.mirror.ends and live.mirror.ends - GetTime(), loot = ns.Copy(ns.loot),
 		roles = ns.RoleMap(), head = ns.Head() and { rev = ns.Head().rev, by = ns.Head().by } or nil,
+		queue = ns.QueueToShare(),
 	}, sender)
 end)
 
@@ -1203,6 +1226,7 @@ ns.Receive(LIVE, "state", function(d, sender)
 		live.mirror, live.observed = m, {}
 	end
 	ns.RestoreLoot(d.loot)
+	ns.TakeSharedQueue(d.queue, sender)
 	local head = d.head
 	if ns.ledger and not ns.HoldsTable() and type(head) == "table" and type(head.rev) == "number" then
 		ns.ledger.data.head.rev, ns.ledger.data.head.by = head.rev, type(head.by) == "string" and head.by or ""

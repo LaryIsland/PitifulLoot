@@ -11,11 +11,18 @@ end
 
 -- What auto-roll does: nothing, roll for you in rerolls only, or in every roll you can take part in.
 ns.AUTO_ROLL = { OFF = 0, REROLLS = 1, ALL = 2 }
+-- What the writer's client does by itself once a roll is decided: nothing, award it if it has winners, or also take the
+-- next step for one no one rolled on (Disenchant, Keep to sell, or a BoE's greed roll), as the writer's button would.
+ns.AUTO_FINISH = { OFF = 0, AWARDS = 1, ALL = 2 }
 
 -- The raid chat languages there are, by name.
 local chatLanguages = {}
 for code, language in pairs(ns.CHAT_LANGUAGES) do chatLanguages[#chatLanguages + 1] = { code, language.name } end
 table.sort(chatLanguages, function(a, b) return a[2] < b[2] end)
+
+-- The fonts the addon's text can be in (Fonts.lua).
+local fonts = {}
+for i, font in ipairs(ns.FONTS) do fonts[i] = { font[1], font[2] } end
 
 ns.OPTIONS = {
 	{ section = L.OPT_SECTION_ANNOUNCEMENTS, officer = true },
@@ -32,7 +39,12 @@ ns.OPTIONS = {
 	{ key = "minQuality", officer = true, kind = "dropdown", name = L.OPT_LOOT_QUALITY,
 		choices = { { 2, L.OPT_QUALITY_UNCOMMON }, { 3, L.OPT_QUALITY_RARE }, { 4, L.OPT_QUALITY_EPIC }, { 5, L.OPT_QUALITY_LEGENDARY } },
 		tooltip = L.OPT_LOOT_QUALITY_TIP },
-	{ key = "autoAward", officer = true, kind = "checkbox", name = L.OPT_AUTO_AWARD, tooltip = L.OPT_AUTO_AWARD_TIP },
+	{ key = "autoFinish", officer = true, kind = "dropdown", name = L.OPT_AUTO_AWARD,
+		choices = {
+			{ ns.AUTO_FINISH.OFF, L.OPT_AUTO_AWARD_OFF }, { ns.AUTO_FINISH.AWARDS, L.OPT_AUTO_AWARD_AWARDS },
+			{ ns.AUTO_FINISH.ALL, L.OPT_AUTO_AWARD_ALL },
+		},
+		tooltip = L.OPT_AUTO_AWARD_TIP },
 	{ section = L.OPT_SECTION_ROLLING },
 	{ key = "autoRoll", kind = "dropdown", name = L.OPT_AUTO_ROLL,
 		choices = {
@@ -41,6 +53,7 @@ ns.OPTIONS = {
 		},
 		tooltip = L.OPT_AUTO_ROLL_TIP },
 	{ section = L.OPT_SECTION_WINDOW },
+	{ key = "font", kind = "dropdown", name = L.OPT_FONT, choices = fonts, tooltip = L.OPT_FONT_TIP },
 	{ key = "autoShow", kind = "checkbox", name = L.OPT_AUTO_SHOW, tooltip = L.OPT_AUTO_SHOW_TIP },
 	{ key = "autoShowLoot", kind = "checkbox", name = L.OPT_AUTO_SHOW_LOOT, tooltip = L.OPT_AUTO_SHOW_LOOT_TIP },
 	{ key = "hideUnrollable", kind = "checkbox", name = L.OPT_HIDE_UNROLLABLE, tooltip = L.OPT_HIDE_UNROLLABLE_TIP },

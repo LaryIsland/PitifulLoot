@@ -56,12 +56,14 @@ L["HEADER_GREED"] = " (greed)" -- after the item's name
 L["HEADER_WAITING"] = "Waiting for %s to start a roll."
 
 -- The footer, and /pl status.
-L["FOOTER_REVISION"] = "Rev %d"
-L["FOOTER_REVISION_BY"] = "Rev %d by %s" -- the officer who recorded it
+L["FOOTER_REVISION_LONG"] = "Revision %d"
+L["FOOTER_REVISION_BY_LONG"] = "Revision %d by %s" -- the officer who recorded it
+L["FOOTER_REVISION_SYNCING_LONG"] = "Revision %d, syncing"
+L["FOOTER_REVISION_BY"] = "Rev %d by %s" -- beside the roll's buttons
 L["FOOTER_REVISION_SYNCING"] = "Rev %d, syncing"
 L["FOOTER_NO_LEDGER"] = "No guild ledger"
-L["WRITER"] = "Writer: %s"
-L["WRITER_NONE"] = "Writer: none"
+L["WRITER_NONE"] = "No Writer"
+L["WRITER"] = "Writer: %s" -- in chat, from /pl status; the window shows just the name
 
 -- The writer's buttons along the bottom.
 L["BUTTON_CLOSE_ROUND"] = "Close round"
@@ -70,6 +72,7 @@ L["BUTTON_GREED_ROLL"] = "Greed roll"
 L["BUTTON_KEEP"] = "Keep to sell"
 L["BUTTON_DISENCHANT"] = "Disenchant"
 L["BUTTON_BE_WRITER"] = "Be the writer"
+L["BUTTON_CLEAR_QUEUE"] = "Clear Queue"
 L["BUTTON_CANCEL"] = "Cancel"
 
 -- The warning sign top right, when something didn't match what this client saw.
@@ -130,7 +133,6 @@ L["REFUSED_RANGE_HINT"] = "Click to roll, or type /roll" -- the click hint under
 -- The Loot tab -----------------------------------------------------------------------------------------------------
 
 L["LOOT_GROUP"] = "Loot %d" -- loot with no boss to name it by
-L["LOOT_COPIES"] = "%d copies"
 L["LOOT_BOE"] = "Binds on Equip"
 L["LOOT_ROLLING"] = "Rolling now"
 L["LOOT_WON_BY"] = "Won by %s"
@@ -142,14 +144,20 @@ L["LOOT_NO_ONE_ROLLED"] = "No one rolled"
 L["LOOT_WON_NOTE"] = "You've won this"
 L["LOOT_PITY_NOTE"] = "Your pity"
 L["HINT_START_ROLL"] = "Left-click to start a roll."
-L["HINT_START_GREED"] = "Left-click to start a greed roll: nobody in the group gets much from it."
-L["HINT_GREED_OR_ROLES"] = "Right-click for a greed roll, or to set its roles."
-L["HINT_GREED"] = "Right-click to start a greed roll."
-L["HINT_SET_ROLES"] = "Right-click to set its roles." -- also on the item at the top of the window
+L["HINT_START_GREED"] = "Left-click to start a greed roll."
+-- While a roll is under way, or the queue's next is about to start, the writer's click queues an item instead.
+L["HINT_ENQUEUE"] = "Click to queue."
+L["HINT_DEQUEUE"] = "Click to dequeue."
+L["HINT_GREED_MENU"] = "Right-click to start a greed roll." -- a BoE, for the writer
+L["HINT_GREED_OR_ROLES"] = "Right-click to start a greed roll or set roles." -- a BoE, for a writer who sets roles
+L["HINT_SET_ROLES"] = "Right-click to set roles." -- also on the item at the top of the window
 
 -- An officer's right-click menu on an item.
 L["MENU_GREED_ROLL"] = "Start a greed roll"
 L["MENU_ROLES"] = "Roles"
+-- The writer's dice on a boss's loot.
+L["ROLL_ALL"] = "Roll all"
+L["HINT_ROLL_ALL"] = "Click to queue all items from this boss."
 
 -- Won items awaiting trade, at the top of the Loot tab.
 L["TRADE_HEADER"] = "Awaiting trade (%d)"
@@ -233,13 +241,18 @@ L["OPT_QUALITY_UNCOMMON"] = "Uncommon"
 L["OPT_QUALITY_RARE"] = "Rare"
 L["OPT_QUALITY_EPIC"] = "Epic"
 L["OPT_QUALITY_LEGENDARY"] = "Legendary"
-L["OPT_AUTO_AWARD"] = "Award Automatically"
-L["OPT_AUTO_AWARD_TIP"] = "As the writer, award rolls the instant they're decided, without clicking {Award}."
+L["OPT_AUTO_AWARD"] = "Auto-award"
+L["OPT_AUTO_AWARD_TIP"] = "As the writer, award items instantly.\n{Awards only}: awards won items.\n{Everything}: also disenchants, and greed-rolls when no one needed."
+L["OPT_AUTO_AWARD_OFF"] = "Off"
+L["OPT_AUTO_AWARD_AWARDS"] = "Awards only"
+L["OPT_AUTO_AWARD_ALL"] = "Everything"
 L["OPT_AUTO_ROLL"] = "Auto-roll"
 L["OPT_AUTO_ROLL_TIP"] = "Rolls for you.\n{Rerolls only}: only rolls when you're tied.\n{Every roll}: rolls on everything you're eligible for, unless you pass first."
 L["OPT_AUTO_ROLL_OFF"] = "Off"
 L["OPT_AUTO_ROLL_REROLLS"] = "Rerolls only"
 L["OPT_AUTO_ROLL_ALL"] = "Every roll"
+L["OPT_FONT"] = "Font"
+L["OPT_FONT_TIP"] = "The font for all of the addon's text."
 L["OPT_AUTO_SHOW"] = "Show When I Can Roll"
 L["OPT_AUTO_SHOW_TIP"] = "Open the addon on the {Roll} tab when a roll starts that you're eligible for."
 L["OPT_AUTO_SHOW_LOOT"] = "Show New Loot"

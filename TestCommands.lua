@@ -47,6 +47,7 @@ local HELP = {
 	"/pl test probe [item] - what the game says about loot methods, the minimap menu, specs and talents, your target and an item, to copy",
 	"/pl test stats [item | target | known] - every stat the game gives for your equipped gear and the latest loot (or an item, your target's gear, or the items seen on the beta so far), with their roles and fits, to copy",
 	"/pl test raid [players] [edge] - fill the Raid tab with made-up raiders (20, up to 40), some with roles unknown (edge: one of each kind); left-click fakes an inspect; again to empty it",
+	"/pl test fonts [number [size [drop]]] - list the fonts the game has, or try one on the Loot tab's queue numbers until you reload",
 }
 
 local fakes = {} -- made-up rollers: { id, name }
@@ -236,16 +237,18 @@ local function RaiderRolls(raider, roll)
 	return ns.CountTestRoll(raider.guid, raider.name, roll, pity, offSpec or nil, guessed)
 end
 
--- Whether a made-up raider can still roll in this round: they haven't rolled or passed, and in a reroll they're tied.
-local function CanStillRoll(m, raider)
+-- Whether a made-up raider can still roll in this round: they haven't rolled or (unless `evenPassed`, as a /roll after
+-- passing still counts) passed, and in a reroll they're tied.
+local function CanStillRoll(m, raider, evenPassed)
 	local id = raider.guid
-	if (m.rounds[m.round] and m.rounds[m.round][id]) or m.passed[id] == m.round then return false end
+	if (m.rounds[m.round] and m.rounds[m.round][id]) or (m.passed[id] == m.round and not evenPassed) then return false end
 	if m.state == "reroll" then return m.contenders[id] == true end
 	return ns.MayRollOn(id, m.item, m.greed)
 end
 
--- The made-up raiders roll as a raid does: in the first round, most of those who can use the item (some don't want
--- it), and in a reroll, the tied ones; their rolls come in over a moment. Returns how many will roll.
+-- The made-up raiders roll as a raid does: in the first round, most of those who can use the item, the others passing
+-- (they don't want it), and in a reroll, the tied ones; their rolls and passes come in over a moment. Returns how many
+-- will roll.
 local WANT_CHANCE = 0.7
 -- Items everyone who can use them rolls on, nobody holding back: the test menu's axe, so both copies go to raiders.
 local ALL_ROLL = { [6975] = true }
@@ -255,8 +258,8 @@ local AT_ONCE = 0.3 -- of the rolls, the share that come in as soon as rolls do 
 
 local function RaidersRoll(m)
 	rolledFor[m.sid .. ":" .. m.round] = true
-	-- In the first round, one raider who could roll always holds back, so there's someone left to make a tie with.
-	local rolling, held = {}, nil
+	-- In the first round, one raider who could roll always passes, so there's someone left to make a tie with.
+	local rolling, passing, held = {}, {}, nil
 	for _, raider in ipairs(raiders) do
 		if CanStillRoll(m, raider) then
 			if m.state == "reroll" then
@@ -265,32 +268,41 @@ local function RaidersRoll(m)
 				rolling[#rolling + 1] = raider
 			elseif not held then
 				held = raider
+				passing[#passing + 1] = raider
 			elseif math.random() < WANT_CHANCE then
 				rolling[#rolling + 1] = raider
+			else
+				passing[#passing + 1] = raider
 			end
 		end
 	end
 	local first = math.random(math.max(#rolling, 1))
-	for i, raider in ipairs(rolling) do
+	local function Arrive(raider, passes, now)
 		local token, round = {}, m.round
 		arriving[token] = true
-		local delay = ROLL_WAIT + ((i == first or math.random() < AT_ONCE) and 0 or math.random() * ROLL_SPREAD)
+		local delay = ROLL_WAIT + ((now or math.random() < AT_ONCE) and 0 or math.random() * ROLL_SPREAD)
 		C_Timer.After(delay, function()
 			if not arriving[token] then return end
 			arriving[token] = nil
-			local now = ns.live.mirror
-			if now == m and now.round == round and (now.state == "open" or now.state == "reroll") then
-				RaiderRolls(raider, math.random(ns.ROLL_MIN, ns.ROLL_MAX))
+			local current = ns.live.mirror
+			if current == m and current.round == round and (current.state == "open" or current.state == "reroll") then
+				if passes then
+					ns.CountTestPass(raider.guid)
+				else
+					RaiderRolls(raider, math.random(ns.ROLL_MIN, ns.ROLL_MAX))
+				end
 			end
 			ns.Fire("SESSION_CHANGED")
 		end)
 	end
+	for i, raider in ipairs(rolling) do Arrive(raider, false, i == first) end
+	for _, raider in ipairs(passing) do Arrive(raider, true) end
 	ns.Fire("SESSION_CHANGED")
 	return #rolling
 end
 
--- In test mode the made-up raiders roll by themselves: in a new roll, most of those who can (some don't want it), and
--- in a reroll, the tied ones; their rolls come in over a moment, some at once.
+-- In test mode the made-up raiders roll by themselves: in a new roll, most of those who can (the others pass), and in a
+-- reroll, the tied ones; their rolls and passes come in over a moment, some at once.
 ns.Listen("ROLL_EVENT", function(kind, m)
 	if (kind == "open" or kind == "reroll") and m and raiders and ns.IsTestMode() and ns.AmWriter() then RaidersRoll(m) end
 end)
@@ -352,7 +364,7 @@ function test.tie()
 	local cut = totals[m.copies]
 	local candidates = {}
 	for _, raider in ipairs(raiders) do
-		if CanStillRoll(m, raider) then table.insert(candidates, math.random(#candidates + 1), raider) end
+		if CanStillRoll(m, raider, true) then table.insert(candidates, math.random(#candidates + 1), raider) end
 	end
 	for _, raider in ipairs(candidates) do
 		local pity, offSpec = 0, false
@@ -919,8 +931,9 @@ local EDGE_CASES = {
 	{ "WARRIOR" }, { "PRIEST", "far" }, { "PALADIN", "noreply" }, { "DRUID", "unreadable" },
 	{ "DRUID", "ambiguous" }, { "SHAMAN", "ambiguous" }, { "PALADIN", "nocapstone" },
 }
--- What a fake inspect finds, in turn; ambiguous only for classes whose capstone can be.
-local FAKE_OUTCOMES = { "far", "noreply", "unreadable", "ambiguous", "nocapstone", "found" }
+-- What a fake inspect finds, in turn; ambiguous only for classes whose capstone can be. "Too far away" is over at once,
+-- as a real one is, so it comes last: first, it would make the first Inspect Unknown look instant.
+local FAKE_OUTCOMES = { "noreply", "unreadable", "ambiguous", "nocapstone", "found", "far" }
 local FAKE_INSPECT_TIME = 1.5
 local AMBIGUOUS_CLASSES = { DRUID = true, SHAMAN = true }
 -- The test menu's raid: five raiders whose roles are unknown, to learn from (5.5). Three haven't been looked at yet,
@@ -937,7 +950,7 @@ local TUTORIAL_WARRIORS = { [4] = true, [9] = true }
 local real = {
 	GroupMembers = ns.GroupMembers, GroupMember = ns.GroupMember, RoleInfo = ns.RoleInfo, RoleReason = ns.RoleReason,
 	IsInspecting = ns.IsInspecting, InspectRaider = ns.InspectRaider, InspectUnknown = ns.InspectUnknown,
-	IsSweeping = ns.IsSweeping, RoleOf = ns.RoleOf, OfferTrade = ns.OfferTrade,
+	IsSweeping = ns.IsSweeping, InspectBusy = ns.InspectBusy, RoleOf = ns.RoleOf, OfferTrade = ns.OfferTrade,
 }
 local fakeSweep -- the made-up raiders a fake "Inspect Unknown" is still to try, while it's on
 
@@ -992,7 +1005,9 @@ end
 function ns.InspectRaider(member, onDone)
 	local raider = raiders and raiders[member.guid]
 	if not raider then return real.InspectRaider(member) end
-	if raider.inspecting or not ns.RoleChoices(raider) then return end
+	if not onDone and ns.InspectBusy() then return end
+	-- A sweep always moves on, even past a raider it can't inspect.
+	if raider.inspecting or not ns.RoleChoices(raider) then return onDone and onDone(false) end
 	-- The test menu's raiders always find the same; the others go through every outcome in turn.
 	local outcome = raider.finds
 	if not outcome then
@@ -1027,7 +1042,7 @@ end
 -- A fake "Inspect Unknown": each made-up raider whose role is unknown gets the next fake inspect, in turn.
 function ns.InspectUnknown()
 	if not raiders then return real.InspectUnknown() end
-	if fakeSweep then return end
+	if ns.InspectBusy() then return end
 	local list = {}
 	fakeSweep = list
 	for _, member in ipairs(ns.UnknownRaiders()) do
@@ -1051,6 +1066,14 @@ end
 function ns.IsSweeping()
 	if raiders then return fakeSweep ~= nil end
 	return real.IsSweeping()
+end
+
+function ns.InspectBusy()
+	if fakeSweep or real.InspectBusy() then return true end
+	for _, raider in ipairs(raiders or {}) do
+		if raider.inspecting then return true end
+	end
+	return false
 end
 
 -- Roles set by hand on made-up raiders go with them, as the next raid's are the same players again.
@@ -1139,6 +1162,65 @@ function test.raid(args)
 		if args[i]:lower() == "edge" then edge = true else count = tonumber(args[i]) or count end
 	end
 	FillRaid(count, edge)
+end
+
+-- Fonts to try on the queue's numbers: the addon's own, the four the game has always had, then any other its own font objects use
+-- (Forever's among them), each with one that uses it.
+local BASE_FONTS = {
+	{ "Interface\\AddOns\\PitifulLoot\\Media\\Cabin-Bold.ttf", "Cabin, which comes with the addon" },
+	{ "Fonts\\FRIZQT__.TTF", "Friz Quadrata, the game's main font" },
+	{ "Fonts\\ARIALN.TTF", "Arial Narrow" },
+	{ "Fonts\\MORPHEUS.TTF", "Morpheus, for quest and book titles" },
+	{ "Fonts\\SKURRI.TTF", "Skurri, for combat text" },
+}
+local fontList, fontProbe
+
+local function FontFile(object)
+	if object.GetObjectType and object:GetObjectType() == "Font" then return (object:GetFont()) end
+end
+
+local function GameFonts()
+	local fonts, seen = {}, {}
+	for _, font in ipairs(BASE_FONTS) do
+		seen[font[1]:lower()] = true
+		fonts[#fonts + 1] = { font[1], font[2] }
+	end
+	local others, users = {}, {}
+	for name, object in pairs(_G) do
+		if type(name) == "string" and type(object) == "table" then
+			local ok, file = pcall(FontFile, object)
+			if ok and type(file) == "string" and file ~= "" and not seen[file:lower()] and not users[file:lower()] then
+				users[file:lower()] = name
+				others[#others + 1] = file
+			end
+		end
+	end
+	table.sort(others)
+	for _, file in ipairs(others) do fonts[#fonts + 1] = { file, "used by " .. users[file:lower()] } end
+	return fonts
+end
+
+-- Whether the game has a font file: false if it hasn't, nil if it can't say.
+local function HasFont(file)
+	fontProbe = fontProbe or UIParent:CreateFontString()
+	return fontProbe:SetFont(file, 12, "")
+end
+
+function test.fonts(args)
+	fontList = fontList or GameFonts()
+	local n = tonumber(args[3])
+	if not n then
+		ns.Print(("%d fonts to try on the queue's numbers (queue some items on the Loot tab to see them):"):format(#fontList))
+		for i, font in ipairs(fontList) do
+			ns.Print(("%d. %s: %s%s"):format(i, font[1], font[2], HasFont(font[1]) == false and " (not in this game)" or ""))
+		end
+		return ns.Print("/pl test fonts <number> [size] [drop] tries one until you reload (size 52 and drop 3 now).")
+	end
+	local font = fontList[n]
+	if not font then return ns.Print("There's no font " .. n .. ": /pl test fonts lists them.") end
+	local _, size, drop = ns.SetQueueFont(font[1], tonumber(args[4]), tonumber(args[5]))
+	ns.Print(("Queue numbers: %s, size %s, dropped %s.%s"):format(font[1], size, drop,
+		HasFont(font[1]) == false and " The game hasn't got it, so they're in its main font." or ""))
 end
 
 function test.help()

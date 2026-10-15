@@ -474,6 +474,12 @@ function ns.IsSweeping()
 	return sweep ~= nil
 end
 
+-- Whether an officer's inspect or sweep is under way, when the Raid tab starts no other until it's over. The writer's
+-- own inspects in the background don't count: an officer's takes their place.
+function ns.InspectBusy()
+	return sweep ~= nil or (inspecting ~= nil and inspectKind ~= "auto")
+end
+
 local function Tell(guid, role, reason, gearRole)
 	if not ns.AmWriter() then ns.TellInspected(guid, role, reason, gearRole) end
 end
@@ -613,7 +619,7 @@ end)
 -- Inspects a raider straight away, for an officer on the Raid tab: their talents are read for their role, whatever
 -- is known already, and the result printed (and sent to the writer, who tells the group).
 function ns.InspectRaider(member)
-	if not Choices(member) or not UnitIsMember(member) then return end
+	if ns.InspectBusy() or not Choices(member) or not UnitIsMember(member) then return end
 	if not CanInspect(member.unit) then
 		why[member.guid] = "far"
 		Changed()
@@ -639,7 +645,7 @@ end
 
 -- An officer's "Inspect Unknown": every raider whose role is unknown is inspected in turn, whatever was tried before.
 function ns.InspectUnknown()
-	if sweep then return end
+	if ns.InspectBusy() then return end
 	local unknown = ns.UnknownRaiders()
 	if not unknown[1] then return end
 	sweep = { tried = 0, found = 0 }

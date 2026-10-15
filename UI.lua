@@ -7,6 +7,7 @@ local L = ns.L
 
 local WIDTH, HEIGHT = 384, 524
 local ROW_HEIGHT = 52
+local ROW_SPACING = 2 -- the list's gap between rows
 local VALUE_WIDTH = 104 -- room on the right of a row you can roll or pass from, for its value and the pass button
 local VALUE_INSET = 12 -- the value and note, from the row's right edge
 local VALUE_GAP = 10 -- between a row's text and the value or note beside it
@@ -46,13 +47,42 @@ local WARNINGS_SHOWN = 5
 local TRADES = "trades" -- the Loot tab's group of won items awaiting trade
 local TRADE_WARNING = 30 * 60 -- seconds left to trade an item below which its time shows in red
 local PASS_SIZE = 24
+local ROLL_ALL_SIZE = 22 -- a boss's dice, on its header
+-- An item's place in the writer's queue: huge and faint behind the row's text, centred two thirds of the way along,
+-- and dropped a little, as a font's line has more room above its digits than below. In the addon's font (Fonts.lua),
+-- or with the game's, its main font (the number font's 6 rises above the rest). `/pl test fonts` tries others.
+local queueFont = { size = 52, drop = 3, version = 1 } -- and `file`, from /pl test fonts until a reload
+local QUEUE_PLACE, QUEUE_ALPHA, QUEUE_GREY = 2 / 3, 0.15, 0.8
 local TRADE_REFRESH = 5 -- seconds between redraws of the time left to trade items
 local FOOTER_LEFT, FOOTER_MIDDLE = 14, 23 -- where the footer's text starts, and the height of its middle
-local BUTTON_MARGIN, PRIMARY_WIDTH, CANCEL_WIDTH = 10, 110, 88
+-- The footer's size: an officer's, with room for the buttons, or a member's, one line (MemberFooter). Each is where the
+-- line above it is, where the list and the panels end above that, and the height of the text's middle.
+local FOOTERS = {
+	officer = { line = 40, list = 48, middle = FOOTER_MIDDLE },
+	member = {},
+}
+local BUTTON_MARGIN, BUTTON_GAP, PRIMARY_WIDTH, CANCEL_WIDTH = 10, 4, 98, 76
 
 local frame
 local view = "session"
 local lines = {}
+-- Each tab's list remembers how far down it was scrolled, as they share the one list: the tab it holds now, and the
+-- others' places.
+local listView
+local scrolledTo = {}
+
+-- A member's footer is one line, level with an officer's lower one (the writer's): an officer's less a line of its text,
+-- whatever the font, and its line a little closer to the text still, as there's less below it.
+local MEMBER_LINE_DROP = 1
+local function MemberFooter()
+	local _, size = frame.Status:GetFont()
+	local lineHeight = (size or 10) + (frame.Status:GetSpacing() or 0)
+	local member, officer = FOOTERS.member, FOOTERS.officer
+	member.line = officer.line - lineHeight - MEMBER_LINE_DROP
+	member.list = officer.list - lineHeight - MEMBER_LINE_DROP
+	member.middle = officer.middle - lineHeight / 2
+	return member
+end
 -- A roll whose off-spec flag the writer just flipped keeps its place in the list while the mouse is on it, rather than
 -- jumping out from under the cursor as its total changes: { id, index, sid }.
 local held
@@ -347,12 +377,13 @@ local function TradeLines(out)
 				item = pending.item,
 				click = click,
 				hints = hints,
+				anchor = pending.handover,
 			}
 		end
 	end
 	if not rows[1] then return end
 	out[#out + 1] = {
-		header = 1, key = TRADES, collapsed = lootCollapsed[TRADES], text = L.TRADE_HEADER:format(#rows),
+		header = 1, key = TRADES, anchor = TRADES, collapsed = lootCollapsed[TRADES], text = L.TRADE_HEADER:format(#rows),
 		toggle = function() lootCollapsed[TRADES] = not lootCollapsed[TRADES] or nil end,
 	}
 	if lootCollapsed[TRADES] then return end
@@ -381,12 +412,13 @@ local function RoleList(suits)
 	return list
 end
 
--- An officer's menu for an item, from a right-click: a greed roll, if the writer can start one, and the item's roles
--- (4.6), ticked as they stand. Changing them is recorded in the ledger for everyone.
-local function ShowItemMenu(owner, item, greedRoll)
+-- An officer's menu for an item, from a right-click: for the writer, a greed roll (if it can have one); and the item's
+-- roles (4.6), if `roles`, ticked as they stand. Changing them is recorded in the ledger for everyone.
+local function ShowItemMenu(owner, item, greedRoll, roles)
 	MenuUtil.CreateContextMenu(owner, function(_, root)
 		root:CreateTitle(C_Item.GetItemInfo(item) or ns.ItemLink(item))
 		if greedRoll then root:CreateButton(L.MENU_GREED_ROLL, greedRoll) end
+		if not roles then return end
 		root:CreateTitle(L.MENU_ROLES)
 		for _, role in ipairs(ns.ROLE_ORDER) do
 			local function Suits()
@@ -436,18 +468,20 @@ local function LootLines()
 		local key = group.key
 		local items = ShownItems(group)
 		if items[1] then
+			local name = group.boss or L.LOOT_GROUP:format(index)
+			-- The writer's dice roll for everything in it still to roll for, one after another.
 			out[#out + 1] = {
-				header = 1, key = key, collapsed = lootCollapsed[key],
-				text = ("%s (%d)"):format(group.boss or L.LOOT_GROUP:format(index), #items),
+				header = 1, key = key, anchor = key, collapsed = lootCollapsed[key],
+				text = ("%s (%d)"):format(name, #items),
 				toggle = function() lootCollapsed[key] = not lootCollapsed[key] or nil end,
+				rollAll = canStart and ns.CanRollAll(group) and function() ns.RollAll(group) end or nil,
 			}
 		end
 		for _, entry in ipairs(lootCollapsed[key] and {} or items) do
 			local item = entry.item
 			local done = ns.LootDone(entry)
 			local detail = {}
-			-- Once it's won, the winners show how many there were.
-			if entry.copies > 1 and not done and entry.status ~= "decided" then detail[#detail + 1] = L.LOOT_COPIES:format(entry.copies) end
+			-- How many copies there are shows on its icon.
 			if entry.boe then detail[#detail + 1] = L.LOOT_BOE end
 			-- The icons of the roles it's for, unless it's for any of them, start the details.
 			local suits = not done and ns.ItemRoles(item)
@@ -471,30 +505,34 @@ local function LootLines()
 				status = L.LOOT_NO_ONE_ROLLED
 			end
 			if status then detail[#detail + 1] = status end
-			-- The writer starts rolls with a left-click; a right-click is a BoE's greed roll, and for officers, a menu
-			-- with that and the item's roles.
+			-- The writer starts rolls with a left-click, or while there's one under way, queues them (or takes them back
+			-- out); a right-click is a menu, with a BoE's greed roll while one could start, and for officers, the
+			-- item's roles.
 			local click, hints
 			local canRoll = canStart and (entry.status == "waiting" or entry.status == "none")
-			local copies = entry.copies - #entry.winners
-			local greed = canRoll and entry.boe and function() ns.StartRoll(item, copies, true) end or nil
+			local busy = canRoll and ns.QueueBusy()
+			local queuedAt = canStart and ns.QueuePosition(entry) or nil
+			local greed = canRoll and not busy and entry.boe and function() ns.RollEntry(entry, true) end or nil
 			local setRoles = AsOfficer() and not ns.ForEveryone(item)
-			if canRoll or greed or setRoles then
+			if canRoll or setRoles then
 				hints = {}
-				if canRoll then hints[#hints + 1] = ns.NeedViable(item) and L.HINT_START_ROLL or L.HINT_START_GREED end
+				if busy then
+					hints[#hints + 1] = queuedAt and L.HINT_DEQUEUE or L.HINT_ENQUEUE
+				elseif canRoll then
+					hints[#hints + 1] = ns.NeedViable(item) and L.HINT_START_ROLL or L.HINT_START_GREED
+				end
 				if greed and setRoles then
 					hints[#hints + 1] = L.HINT_GREED_OR_ROLES
 				elseif greed then
-					hints[#hints + 1] = L.HINT_GREED
+					hints[#hints + 1] = L.HINT_GREED_MENU
 				elseif setRoles then
 					hints[#hints + 1] = L.HINT_SET_ROLES
 				end
 				click = function(button, owner)
 					if button == "LeftButton" and canRoll then
-						ns.StartRoll(item, copies)
-					elseif button == "RightButton" and setRoles then
-						ShowItemMenu(owner, item, greed)
-					elseif button == "RightButton" and greed then
-						greed()
+						if ns.QueueBusy() then ns.ToggleQueued(entry) else ns.RollEntry(entry) end
+					elseif button == "RightButton" and (greed or setRoles) then
+						ShowItemMenu(owner, item, greed, setRoles)
 					end
 				end
 			end
@@ -522,6 +560,9 @@ local function LootLines()
 				item = item,
 				click = click,
 				hints = hints,
+				queued = ns.QueueNumber(entry),
+				count = entry.copies > 1 and entry.copies or nil,
+				anchor = entry,
 			}
 		end
 	end
@@ -673,6 +714,15 @@ local function BuildRow(row)
 	row.IconBorder = row:CreateTexture(nil, "OVERLAY")
 	row.IconBorder:SetTexture("Interface\\Common\\WhiteIconFrame")
 	row.IconBorder:SetAllPoints(row.Icon)
+	-- How many copies there are, in the corner of the icon as the game shows a stack's count, a size up from it.
+	row.Count = row:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
+	row.Count:SetPoint("BOTTOMRIGHT", row.Icon, -1, 1)
+	-- Its place in the writer's queue, behind the row's text (above its background art).
+	row.Queue = row:CreateFontString(nil, "BACKGROUND", "NumberFontNormalHuge")
+	row.Queue:SetDrawLayer("BACKGROUND", 3)
+	ns.KeepFont(row.Queue)
+	row.Queue:SetTextColor(QUEUE_GREY, QUEUE_GREY, QUEUE_GREY)
+	row.Queue:SetAlpha(QUEUE_ALPHA)
 	row.Title = row:CreateFontString(nil, "ARTWORK", "GameFontNormalMed1")
 	row.Title:SetJustifyH("LEFT")
 	row.Title:SetWordWrap(false)
@@ -728,12 +778,37 @@ local function BuildRow(row)
 	-- A left-click acts as the button goes down: the list redraws often during a roll, handing its rows out again,
 	-- and a click that waited for the button to come back up was lost whenever that happened in between.
 	row:RegisterForClicks("LeftButtonDown", "RightButtonUp")
-	row:SetScript("OnClick", function(self, button) if self.line and self.line.click then self.line.click(button, self) end end)
+	row:SetScript("OnClick", function(self, button)
+		local line = self.line
+		if not line then return end
+		-- Shift-clicking an item links it in chat and Ctrl-clicking tries it on in the dressing room, as the game's own
+		-- item buttons do (on whichever keys those are bound to); neither starts a roll.
+		if line.item and (IsModifiedClick("CHATLINK") or IsModifiedClick("DRESSUP")) then
+			HandleModifiedItemClick(ns.ItemLink(line.item))
+			return
+		end
+		if line.click then line.click(button, self) end
+	end)
 	row:SetScript("OnEnter", function(self) if self.line then ShowTooltip(self, self.line) end end)
 	-- The game redraws a hovered button's tooltip through this, as its own item buttons do, so Shift's comparisons
 	-- show (and the tooltip stays) rather than the tooltip being rebuilt without us.
 	row.UpdateTooltip = function(self) if self.line then ShowTooltip(self, self.line) end end
 	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ns.UseAddonFont(row)
+end
+
+-- Tries another font, size or drop for the queue's numbers until a reload (`/pl test fonts`); a file of false goes back
+-- to the addon's font. Returns them as they are.
+function ns.SetQueueFont(file, size, drop)
+	if file == false then
+		queueFont.file = nil
+	elseif file then
+		queueFont.file = file
+	end
+	queueFont.size, queueFont.drop = size or queueFont.size, drop or queueFont.drop
+	queueFont.version = queueFont.version + 1
+	ns.RefreshWindow()
+	return queueFont.file, queueFont.size, queueFont.drop
 end
 
 local function InitRow(row, line)
@@ -748,6 +823,19 @@ local function InitRow(row, line)
 	local border = line.icon and line.item and QualityColor(line.item)
 	row.IconBorder:SetShown(border ~= nil)
 	if border then row.IconBorder:SetVertexColor(border.r, border.g, border.b) end
+	row.Count:SetShown(line.icon ~= nil and line.count ~= nil)
+	row.Count:SetText(line.count or "")
+	row.Queue:SetShown(line.queued ~= nil)
+	if line.queued and row.queueVersion ~= queueFont.version then
+		row.queueVersion = queueFont.version
+		local file = queueFont.file or ns.FontFile()
+		if not file or row.Queue:SetFont(file, queueFont.size, "") == false then
+			row.Queue:SetFont((GameFontNormal:GetFont()), queueFont.size, "")
+		end
+		row.Queue:ClearAllPoints()
+		row.Queue:SetPoint("CENTER", row, "LEFT", ROW_WIDTH * QUEUE_PLACE, -queueFont.drop)
+	end
+	row.Queue:SetText(line.queued or "")
 	-- The name runs up to the value beside it, and the details up to the note beside them, or else to the right
 	-- edge; a row you can roll or pass from keeps room for those all along.
 	row.Value:SetText(line.value or "")
@@ -865,6 +953,26 @@ local function BuildHeader(header)
 		self.line.toggle()
 		ns.RefreshWindow()
 	end)
+	-- The writer's Roll all on a boss's loot, with the group loot roll's own need dice, beside the plus or minus.
+	header.RollAll = CreateFrame("Button", nil, header)
+	header.RollAll:SetSize(ROLL_ALL_SIZE, ROLL_ALL_SIZE)
+	header.RollAll:RegisterForClicks("LeftButtonDown") -- as the rows' own clicks, so a redraw can't lose it
+	header.RollAll:SetPoint("RIGHT", header.StateIcon, "LEFT", -6, 0)
+	header.RollAll:SetNormalAtlas("lootroll-toast-icon-need-up")
+	header.RollAll:SetHighlightAtlas("lootroll-toast-icon-need-highlight", "ADD")
+	header.RollAll:SetPushedAtlas("lootroll-toast-icon-need-down")
+	header.RollAll:SetScript("OnClick", function(self)
+		local line = self:GetParent().line
+		if line and line.rollAll then line.rollAll() end
+	end)
+	header.RollAll:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip_SetTitle(GameTooltip, L.ROLL_ALL)
+		ns.AddHint(GameTooltip, L.HINT_ROLL_ALL)
+		GameTooltip:Show()
+	end)
+	header.RollAll:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ns.UseAddonFont(header)
 end
 
 local function InitHeader(header, line)
@@ -877,6 +985,7 @@ local function InitHeader(header, line)
 	header.Name:SetShown(raid)
 	header.Arrow:SetShown(not raid)
 	header.SubName:SetShown(not raid)
+	header.RollAll:SetShown(line.rollAll ~= nil)
 	if raid then
 		header.StateIcon:SetAtlas(line.collapsed and "common-button-list-plus" or "common-button-list-minus", true)
 		header.Name:SetText(line.text)
@@ -933,36 +1042,69 @@ local function UpdateHeader()
 	UpdateTimer()
 end
 
+-- A player's GUID, from their GUID or name: yours, or a group member's.
+local function GuidOf(who)
+	if not who then return nil end
+	if who == UnitGUID("player") or ns.IsMe(who) then return UnitGUID("player") end
+	local member = ns.GroupMember(who)
+	return member and member.guid or who
+end
+
 -- The footer runs up to whichever buttons are showing: the ledger's revision and the officer who recorded it (not
--- while it's syncing, when it's moving), over the writer, always on two lines so they stay put. Test mode is in the
--- title, out of its way.
+-- while it's syncing, when it's moving, nor when it's the writer), over the writer, in a group or an instance. Test
+-- mode is in the title, out of its way.
 local function UpdateFooter()
+	-- Beside the roll's buttons, "Revision" is "Rev" when there's more after it; beside Clear Queue as well, there's
+	-- only room for the revision and the writer's name.
+	local controls = frame.Cancel:IsShown() or frame.ClearQueue:IsShown()
+	local short = frame.ClearQueue:IsShown()
+	local writerShown = ns.live.writer and ns.WriterShownAs()
 	local ledger
 	if ns.ledger then
 		local head = ns.Head()
+		-- On the test menu's raider page, what you recorded is the made-up officer's, as the writer is.
+		local by = type(head.by) == "string" and head.by ~= "" and (head.by == UnitGUID("player") and ns.TestOfficer() or head.by)
 		if ns.SyncBusy() then
-			ledger = L.FOOTER_REVISION_SYNCING:format(head.rev)
-		elseif type(head.by) == "string" and head.by ~= "" then
-			-- On the test menu's raider page, what you recorded is the made-up officer's, as the writer is.
-			local by = head.by == UnitGUID("player") and ns.TestOfficer() or head.by
-			ledger = L.FOOTER_REVISION_BY:format(head.rev, ns.ColoredName(by))
+			ledger = (controls and L.FOOTER_REVISION_SYNCING or L.FOOTER_REVISION_SYNCING_LONG):format(head.rev)
+		elseif by and not short and GuidOf(by) ~= GuidOf(writerShown) then
+			-- Who recorded it, unless it's the writer, named just below.
+			ledger = (controls and L.FOOTER_REVISION_BY or L.FOOTER_REVISION_BY_LONG):format(head.rev, ns.ColoredName(by))
 		else
-			ledger = L.FOOTER_REVISION:format(head.rev)
+			ledger = L.FOOTER_REVISION_LONG:format(head.rev)
 		end
 	else
 		ledger = L.FOOTER_NO_LEDGER
 	end
-	local writer = ns.live.writer and L.WRITER:format(ns.ColoredName(ns.WriterShownAs())) or L.WRITER_NONE
-	local status = frame.Status
-	local primary, cancel = frame.Primary:IsShown(), frame.Cancel:IsShown()
-	status:ClearAllPoints()
-	status:SetPoint("LEFT", frame, "BOTTOMLEFT", FOOTER_LEFT, FOOTER_MIDDLE)
-	if primary or cancel then
-		status:SetPoint("RIGHT", primary and frame.Primary or frame.Cancel, "LEFT", -8, 0)
-	else
-		status:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -12, FOOTER_MIDDLE)
+	local writer = writerShown and ns.ColoredName(writerShown) or L.WRITER_NONE
+	-- The writer only matters in a group or an instance (or test mode, which acts as one): under the revision for an
+	-- officer, and on the right of the same line for a member, whose footer has no buttons and is smaller.
+	local showWriter = IsInGroup() or IsInInstance() or ns.IsTestMode()
+	local member = not AsOfficer()
+	local footer = member and MemberFooter() or FOOTERS.officer
+	local at = footer.line .. ":" .. footer.middle
+	if frame.footerAt ~= at then
+		frame.footerAt = at
+		frame.BottomLine:SetPoint("LEFT", frame, "BOTTOMLEFT", 4, footer.line)
+		frame.BottomLine:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -4, footer.line)
+		frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, footer.list)
+		frame.Raid:SetPoint("BOTTOMRIGHT", -30, footer.list)
+		frame.Writer:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -FOOTER_LEFT, footer.middle)
 	end
-	status:SetText(ledger .. "\n" .. writer)
+	local status = frame.Status
+	local leftmost = frame.ClearQueue:IsShown() and frame.ClearQueue or frame.Primary:IsShown() and frame.Primary
+		or frame.Cancel:IsShown() and frame.Cancel
+	status:ClearAllPoints()
+	status:SetPoint("LEFT", frame, "BOTTOMLEFT", FOOTER_LEFT, footer.middle)
+	if leftmost then
+		status:SetPoint("RIGHT", leftmost, "LEFT", -8, 0)
+	elseif member and showWriter then
+		status:SetPoint("RIGHT", frame.Writer, "LEFT", -8, 0)
+	else
+		status:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -12, footer.middle)
+	end
+	status:SetText((showWriter and not member) and ledger .. "\n" .. writer or ledger)
+	frame.Writer:SetShown(member and showWriter)
+	frame.Writer:SetText(writer)
 
 	local title = "Pitiful Loot"
 	if ns.IsTestMode() then
@@ -978,6 +1120,8 @@ local function UpdateButtons()
 	local writer = AsWriter()
 	local active = m and (m.state == "open" or m.state == "reroll")
 	local decided = m and m.state == "decided"
+	-- In the moment before the queue's next roll starts, its buttons are already there, greyed out.
+	local gap = writer and not (active or decided) and ns.QueueGap()
 	local label, action
 	if writer and active then
 		label, action = L.BUTTON_CLOSE_ROUND, ns.CloseRound
@@ -989,19 +1133,33 @@ local function UpdateButtons()
 		label, action = L.BUTTON_KEEP, ns.KeepToSell
 	elseif writer and decided and not ns.IsBoE(m.item) then
 		label, action = L.BUTTON_DISENCHANT, ns.Disenchant
+	elseif gap then
+		label = L.BUTTON_CLOSE_ROUND
 	elseif not writer and (IsInGroup() or ns.IsTestMode()) and AsOfficer() then
 		label, action = L.BUTTON_BE_WRITER, ns.ClaimWriter
 	end
 	frame.Primary:SetShown(label ~= nil)
 	frame.Primary:SetText(label or "")
 	frame.Primary.action = action
-	local cancel = writer and (active or decided) or false
+	frame.Primary:SetEnabled(not gap)
+	local cancel = writer and (active or decided or gap) or false
 	frame.Cancel:SetShown(cancel)
+	frame.Cancel:SetEnabled(not gap)
 	frame.Primary:ClearAllPoints()
 	if cancel then
-		frame.Primary:SetPoint("RIGHT", frame.Cancel, "LEFT", -4, 0)
+		frame.Primary:SetPoint("RIGHT", frame.Cancel, "LEFT", -BUTTON_GAP, 0)
 	else
 		frame.Primary:SetPoint("BOTTOMRIGHT", -BUTTON_MARGIN, 12)
+	end
+	-- Clear Queue, to the left of the others, whenever there's a queue: during a roll too.
+	local clear = frame.ClearQueue
+	clear:SetShown(writer and ns.HasQueue() or false)
+	clear:ClearAllPoints()
+	local beside = label and frame.Primary or (cancel and frame.Cancel)
+	if beside then
+		clear:SetPoint("RIGHT", beside, "LEFT", -BUTTON_GAP, 0)
+	else
+		clear:SetPoint("BOTTOMRIGHT", -BUTTON_MARGIN, 12)
 	end
 end
 
@@ -1023,8 +1181,40 @@ local function UpdateTabs()
 	end
 end
 
+local function LineHeight(line)
+	return line.header and HEADER_HEIGHT or (line.divider and DIVIDER_HEIGHT) or ROW_HEIGHT
+end
+
+-- The Loot tab keeps still when rows come or go above what's in view (an item won joins Awaiting trade at the top): the
+-- row at the top of the view stays there, both while the tab's on show and when you come back to it. At the very top,
+-- it stays at the top, so new rows there show.
+local KEEPS_STILL = { loot = true }
+local heldRow = {} -- by tab: the row at the top of its view when you left it, and how far into it the view started
+
+-- The row at the top of what's in view in a list, and how far into it the view starts; nil at the very top. Each row
+-- takes its height and the gap after it.
+local function RowInView(list, offset)
+	if offset <= 0 then return nil end
+	local top = 0
+	for _, line in ipairs(list) do
+		local step = LineHeight(line) + ROW_SPACING
+		if top + step > offset and line.anchor ~= nil then return { line.anchor, offset - top } end
+		top = top + step
+	end
+end
+
+-- Where to scroll a list to so that row's back where it was; nil if it's gone.
+local function OffsetOf(list, row)
+	local top = 0
+	for _, line in ipairs(list) do
+		if line.anchor == row[1] then return math.max(top + row[2], 0) end
+		top = top + LineHeight(line) + ROW_SPACING
+	end
+end
+
 function ns.RefreshWindow()
 	if not frame or not frame:IsShown() then return end
+	local before = lines
 	if view == "raid" and not ns.ShowsRaidTab() then view = "session" end
 	if view == "session" then
 		lines = SessionLines()
@@ -1046,7 +1236,28 @@ function ns.RefreshWindow()
 	-- data); the row under the mouse gets it back.
 	local owner = GameTooltip:IsShown() and GameTooltip:GetOwner()
 	local hadTip = type(owner) == "table" and rawget(owner, "line") ~= nil
-	frame.ScrollBox:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
+	local box = frame.ScrollBox
+	local offset = box:GetDerivedScrollOffset()
+	local keep
+	if view ~= listView and listView then
+		scrolledTo[listView] = offset
+		heldRow[listView] = KEEPS_STILL[listView] and RowInView(before, offset) or nil
+	elseif KEEPS_STILL[view] then
+		keep = RowInView(before, offset)
+	end
+	box:SetDataProvider(CreateDataProvider(lines), ScrollBoxConstants.RetainScrollPosition)
+	keep = keep and OffsetOf(lines, keep)
+	if keep then box:ScrollToOffset(keep, ScrollBoxConstants.NoScrollInterpolation) end
+	if view ~= listView then
+		listView = view
+		offset = scrolledTo[view] or 0
+		if heldRow[view] then offset = OffsetOf(lines, heldRow[view]) or offset end
+		if offset > 0 then
+			box:ScrollToOffset(offset, ScrollBoxConstants.NoScrollInterpolation)
+		else
+			box:ScrollToBegin(ScrollBoxConstants.NoScrollInterpolation)
+		end
+	end
 	if hadTip then
 		frame.ScrollBox:ForEachFrame(function(row)
 			if row.line and row:IsMouseOver() then ShowTooltip(row, row.line) end
@@ -1091,7 +1302,7 @@ local SECTION_GAP = 12 -- between a section's title and the options either side 
 local function CreateOptions(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 20, -92)
-	scroll:SetPoint("BOTTOMRIGHT", -30, 50)
+	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
 	scroll.ScrollBar:SetHideIfUnscrollable(true)
 	scroll.ScrollBar:ClearAllPoints()
 	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 7, 0)
@@ -1124,7 +1335,7 @@ local function CreateOptions(parent)
 		elseif option.kind == "checkbox" then
 			local box = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
 			box.Text:SetText(option.name)
-			box.Text:SetFontObject("GameFontHighlight")
+			box.Text:SetFontObject(ns.Font("GameFontHighlight"))
 			box:SetScript("OnClick", function(self) ns.SetOption(option.key, self:GetChecked() and true or false) end)
 			Tooltip(box, option)
 			row.regions[1] = { box, "TOPLEFT", 4, 0 }
@@ -1211,7 +1422,7 @@ local function CreateOptions(parent)
 		local showOfficer = isOfficer and ns.settings.showOfficerOptions
 		officer:SetShown(isOfficer)
 		officer:SetChecked(showOfficer)
-		scroll:SetPoint("BOTTOMRIGHT", -30, isOfficer and 80 or 50)
+		scroll:SetPoint("BOTTOMRIGHT", -30, isOfficer and 80 or MemberFooter().list)
 		-- A section's title is as far below the option before it as its first option is below it.
 		local y, previous = 0, nil
 		for _, row in ipairs(rows) do
@@ -1308,7 +1519,8 @@ local function ShowRaiderTooltip(owner, member)
 	end
 	GameTooltip_AddNormalLine(GameTooltip, L.RAID_GROUP:format(member.subgroup or 1))
 	if ns.RoleChoices(member) and AsOfficer() then
-		ns.AddHint(GameTooltip, L.HINT_INSPECT)
+		-- No other inspect starts while an officer's is under way.
+		if not ns.InspectBusy() then ns.AddHint(GameTooltip, L.HINT_INSPECT) end
 		ns.AddHint(GameTooltip, L.HINT_SET_ROLE)
 	end
 	GameTooltip:Show()
@@ -1361,7 +1573,7 @@ local function BuildRaiderRow(row)
 		if not (member and ns.RoleChoices(member) and AsOfficer()) then return end
 		if button == "RightButton" then
 			ShowRaiderMenu(self, member)
-		else
+		elseif not ns.InspectBusy() then
 			ns.InspectRaider(member)
 		end
 	end)
@@ -1374,6 +1586,7 @@ local function BuildRaiderRow(row)
 		hoveredRaider = nil
 		GameTooltip:Hide()
 	end)
+	ns.UseAddonFont(row)
 end
 
 ---@param row table a raider's row on the Raid tab
@@ -1404,7 +1617,7 @@ end
 local function CreateRaid(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 20, -92)
-	scroll:SetPoint("BOTTOMRIGHT", -30, 50)
+	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
 	scroll.ScrollBar:SetHideIfUnscrollable(true)
 	scroll.ScrollBar:ClearAllPoints()
 	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 7, 0)
@@ -1438,6 +1651,7 @@ local function CreateRaid(parent)
 			local block = { Background = panel:CreateTexture(nil, "BACKGROUND") }
 			block.Background:SetColorTexture(0, 0, 0, 0.3)
 			block.Number = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+			ns.UseAddonFont(block.Number)
 			blocks[i] = block
 		end
 		return blocks[i]
@@ -1467,7 +1681,7 @@ local function CreateRaid(parent)
 		local officer = AsOfficer()
 		inspect:SetShown(officer and groups[1] ~= nil)
 		inspect:SetText(ns.IsSweeping() and L.RAID_INSPECTING_BUTTON or L.RAID_INSPECT_UNKNOWN)
-		inspect:SetEnabled(not ns.IsSweeping() and ns.UnknownRaiders()[1] ~= nil)
+		inspect:SetEnabled(not ns.InspectBusy() and ns.UnknownRaiders()[1] ~= nil)
 
 		local used, y = 0, -RAID_SUMMARY_HEIGHT
 		for i = 1, #groups, 2 do
@@ -1661,9 +1875,10 @@ local function Create()
 	topLine:SetPoint("RIGHT", background, "TOPRIGHT", 0, -1)
 	topLine:SetHeight(8)
 	local bottomLine = Texture(frame, "ARTWORK", "groupfinder-ScrollLine")
-	bottomLine:SetPoint("LEFT", frame, "BOTTOMLEFT", 4, 42)
-	bottomLine:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -4, 42)
+	bottomLine:SetPoint("LEFT", frame, "BOTTOMLEFT", 4, FOOTERS.officer.line)
+	bottomLine:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -4, FOOTERS.officer.line)
 	bottomLine:SetHeight(8)
+	frame.BottomLine = bottomLine
 
 	-- The item being rolled for, its round, and the round's timer.
 	frame.ItemName = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalMed2")
@@ -1690,7 +1905,7 @@ local function Create()
 	itemHit.UpdateTooltip = itemHit:GetScript("OnEnter") -- as the list's rows do, for Shift's comparisons
 	itemHit:SetScript("OnClick", function(self)
 		local m = ns.live.mirror
-		if CanSetRoles(m) then ShowItemMenu(self, m.item) end
+		if CanSetRoles(m) then ShowItemMenu(self, m.item, nil, true) end
 	end)
 	itemHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	MakeDragHandle(itemHit)
@@ -1732,14 +1947,14 @@ local function Create()
 	-- The list, with the minimal scroll bar the base game's lists use.
 	frame.ScrollBox = CreateFrame("Frame", nil, frame, "WowScrollBoxList")
 	frame.ScrollBox:SetPoint("TOPLEFT", 12, -88)
-	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, 50)
+	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, FOOTERS.officer.list)
 	frame.ScrollBar = CreateFrame("EventFrame", nil, frame, "MinimalScrollBar")
 	frame.ScrollBar:SetPoint("TOPLEFT", frame.ScrollBox, "TOPRIGHT", 5, -4)
 	frame.ScrollBar:SetPoint("BOTTOMLEFT", frame.ScrollBox, "BOTTOMRIGHT", 5, -1)
 	-- Headers are CheckButtons and rows Buttons, so the list keeps a separate pool of each.
-	local scrollView = CreateScrollBoxListLinearView(0, 0, 0, 0, 2)
+	local scrollView = CreateScrollBoxListLinearView(0, 0, 0, 0, ROW_SPACING)
 	scrollView:SetElementExtentCalculator(function(_, line)
-		return line.header and HEADER_HEIGHT or (line.divider and DIVIDER_HEIGHT) or ROW_HEIGHT
+		return LineHeight(line)
 	end)
 	scrollView:SetElementFactory(function(factory, line)
 		if line.header then
@@ -1806,6 +2021,9 @@ local function Create()
 	frame.Status:SetJustifyH("LEFT")
 	frame.Status:SetWordWrap(true)
 	frame.Status:SetMaxLines(2)
+	frame.Writer = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+	frame.Writer:SetJustifyH("RIGHT")
+	frame.Writer:SetWordWrap(false)
 	frame.Cancel = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 	frame.Cancel:SetSize(CANCEL_WIDTH, 22)
 	frame.Cancel:SetPoint("BOTTOMRIGHT", -BUTTON_MARGIN, 12)
@@ -1814,6 +2032,10 @@ local function Create()
 	frame.Primary = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 	frame.Primary:SetSize(PRIMARY_WIDTH, 22)
 	frame.Primary:SetScript("OnClick", function(self) if self.action then self.action() end end)
+	frame.ClearQueue = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+	frame.ClearQueue:SetSize(PRIMARY_WIDTH, 22)
+	frame.ClearQueue:SetText(L.BUTTON_CLEAR_QUEUE)
+	frame.ClearQueue:SetScript("OnClick", function() ns.ClearQueue() end)
 
 	-- Large side tabs down the right, as the group finder has.
 	frame.Tabs = {}
@@ -1878,12 +2100,19 @@ local function Create()
 	frame:SetScript("OnShow", ns.RefreshWindow)
 	frame:SetScript("OnSizeChanged", FitBackground)
 	FitBackground()
+	ns.UseAddonFont(frame)
 	frame:Hide()
 end
 
-function ns.ShowWindow(tab)
+-- Shows the window, on `tab` if given, scrolled to its top if `top`, as for a roll that's just started; otherwise the
+-- tab is where it was left.
+function ns.ShowWindow(tab, top)
 	if not frame then Create() end
 	if tab then view = tab end
+	if top then
+		scrolledTo[view], heldRow[view] = 0, nil
+		if listView == view and frame:IsShown() then frame.ScrollBox:ScrollToBegin(ScrollBoxConstants.NoScrollInterpolation) end
+	end
 	frame:Show()
 	ns.RefreshWindow()
 end
@@ -1925,9 +2154,15 @@ local function RefreshSoon()
 	end)
 end
 
-for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "ROLES_CHANGED", "WARNINGS", "SYNC_CHANGED" }) do
+for _, name in ipairs({ "SESSION_CHANGED", "LEDGER_CHANGED", "ROSTER_CHANGED", "ROLES_CHANGED", "WARNINGS", "SYNC_CHANGED",
+	"QUEUE_CHANGED" }) do
 	ns.Listen(name, RefreshSoon)
 end
+-- The queue's numbers set their font themselves; the rest of the text follows the font objects (Fonts.lua).
+ns.Listen("FONT_CHANGED", function()
+	queueFont.version = queueFont.version + 1
+	RefreshSoon()
+end)
 -- New loot opens its own group and the items awaiting trade, folds the other groups away, and opens the window on
 -- the Loot tab (an option), unless you're hiding all of it. Loot caught up on after joining the group doesn't open
 -- the window. An item's roll moving on only redraws it.
@@ -1942,9 +2177,11 @@ ns.Listen("LOOT_CHANGED", function(newGroup, restored)
 	RefreshSoon()
 end)
 
--- Awarding or disenchanting takes the writer back to the Loot tab while there's loot left to deal with.
+-- Awarding or disenchanting takes the writer back to the Loot tab while there's loot left to deal with, unless there's
+-- more queued, which carries on in the background.
 ns.Listen("ROLL_EVENT", function(kind)
-	if (kind == "awarded" or kind == "disenchant") and AsWriter() and frame and frame:IsShown() and ns.LootToDistribute() then
+	if (kind == "awarded" or kind == "disenchant") and AsWriter() and frame and frame:IsShown() and ns.LootToDistribute()
+		and not ns.HasQueue() then
 		SetView("loot")
 	end
 end)

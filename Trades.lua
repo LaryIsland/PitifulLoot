@@ -24,14 +24,15 @@ local function EachHandover(callback)
 	end
 end
 
--- The copies still to be handed over, soonest to run out first: { item, id (the winner), sid, from, expires }.
+-- The copies still to be handed over, soonest to run out first, and among those running out together (the same boss's
+-- loot), each winner's together, where their first is: { item, id (the winner), sid, from, expires }.
 function ns.PendingTrades()
 	local list = {}
 	EachHandover(function(handover, entry, group)
 		if not handover.done then
 			list[#list + 1] = {
 				item = entry.item, id = handover.id, sid = handover.sid, from = group.from,
-				expires = group.time + ns.TRADE_WINDOW,
+				expires = group.time + ns.TRADE_WINDOW, handover = handover,
 			}
 		end
 	end)
@@ -39,6 +40,17 @@ function ns.PendingTrades()
 		if a.expires ~= b.expires then return a.expires < b.expires end
 		if a.item ~= b.item then return a.item < b.item end
 		return a.id < b.id
+	end)
+	local first = {}
+	for i, pending in ipairs(list) do
+		local key = pending.expires .. ":" .. pending.id
+		pending.order, first[key] = i, first[key] or i
+	end
+	table.sort(list, function(a, b)
+		if a.expires ~= b.expires then return a.expires < b.expires end
+		local firstA, firstB = first[a.expires .. ":" .. a.id], first[b.expires .. ":" .. b.id]
+		if firstA ~= firstB then return firstA < firstB end
+		return a.order < b.order
 	end)
 	return list
 end

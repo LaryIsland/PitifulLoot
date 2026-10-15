@@ -32,7 +32,9 @@ Sync.lua
 Leavers.lua
 Session.lua
 Loot.lua
+Queue.lua
 Trades.lua
+Fonts.lua
 UI.lua
 MinimapButton.lua
 Options.lua

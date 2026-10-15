@@ -158,13 +158,25 @@ function ns.RestoreLoot(loot, filter)
 	ns.Fire("LOOT_CHANGED", ns.LatestLoot(), true)
 end
 
+-- The entry the writer is starting a roll from (ns.RollEntry), while it starts.
+local starting
+
+-- The writer starts a roll for the copies of an entry still to be given out (a greed roll, if `greed`).
+function ns.RollEntry(entry, greed)
+	starting = entry
+	ns.StartRoll(entry.item, entry.copies - #entry.winners, greed)
+	starting = nil
+end
+
 -- The loot entry a roll is for, and its group: the one it started on, or else the newest of that item still to be
 -- given out.
 local function EntryFor(m)
 	local groups = ns.loot.groups
 	for g = #groups, 1, -1 do
 		for _, entry in ipairs(groups[g].items) do
-			if entry.sid == m.sid or entry.lastSid == m.sid then return entry, groups[g] end
+			if entry.sid == m.sid or entry.lastSid == m.sid or entry == starting and entry.item == m.item then
+				return entry, groups[g]
+			end
 		end
 	end
 	for g = #groups, 1, -1 do

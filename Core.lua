@@ -20,7 +20,7 @@ local DEFAULTS = {
 	announce = true, -- the writer's raid chat messages (5.3)
 	whisperRefusals = true, -- the writer whispers players without the addon whose roll didn't count
 	raidWarning = true, -- headlines as raid warnings, when the writer is leader or an assistant
-	autoAward = false, -- the writer awards each roll as soon as it's decided
+	autoFinish = 0, -- 1 the writer awards each roll as soon as it's decided, 2 also deals with what no one rolled on (ns.AUTO_FINISH)
 	autoRoll = 0, -- 1 rolls for you in rerolls, 2 in every roll you can take part in (ns.AUTO_ROLL)
 	autoShow = true,
 	autoShowLoot = true, -- open the window on the Loot tab when new loot is added
@@ -31,6 +31,7 @@ local DEFAULTS = {
 	tooltipHints = true, -- the lines in tooltips saying what clicking does
 	showRaidTab = false, -- a member showing the Raid tab, to look at (officers always have it)
 	showOfficerOptions = false, -- the Options tab's officer options, for officers who want them
+	font = "cabin", -- the addon's text (ns.FONTS, Fonts.lua)
 	chatLanguage = "enUS", -- the writer's raid chat and whispers (ns.CHAT_LANGUAGES), whatever the game's language
 }
 ns.DEFAULTS = DEFAULTS

@@ -170,7 +170,7 @@ end
 local function Checkbox(parent, spec)
 	local box = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
 	box.Text:SetText(spec.title)
-	box.Text:SetFontObject("GameFontHighlight")
+	box.Text:SetFontObject(ns.Font("GameFontHighlight"))
 	box:SetMotionScriptsWhileDisabled(true)
 	box:SetScript("OnClick", function(self) spec.Click(self:GetChecked() and true or false) end)
 	spec.widget = box
@@ -401,16 +401,16 @@ local function Refresh()
 		if spec.kind == "button" and spec.Label then widget:SetText(spec.Label()) end
 		if spec.kind == "checkbox" then
 			widget:SetChecked(spec.Checked and spec.Checked() or false)
-			widget.Text:SetFontObject(enabled and "GameFontHighlight" or "GameFontDisable")
+			widget.Text:SetFontObject(ns.Font(enabled and "GameFontHighlight" or "GameFontDisable"))
 		end
-		if spec.label then spec.label:SetFontObject(enabled and "GameFontHighlight" or "GameFontDisable") end
+		if spec.label then spec.label:SetFontObject(ns.Font(enabled and "GameFontHighlight" or "GameFontDisable")) end
 	end
 	-- On each page, the step you're on, the first not yet done, has a faint highlight behind it.
 	for _, each in pairs(pages) do
 		local current
 		for _, step in ipairs(each.built) do
 			local done = on and step.spec.Done ~= nil and step.spec.Done() == true
-			step.Title:SetFontObject(on and "GameFontNormal" or "GameFontDisable")
+			step.Title:SetFontObject(ns.Font(on and "GameFontNormal" or "GameFontDisable"))
 			step.Check:SetShown(done)
 			if on and not done and not current then current = step end
 			step.Highlight:SetShown(step == current)
@@ -682,6 +682,7 @@ local function Create()
 	menu.SetPage = ShowPage
 	menu.GetPage = function() return page end
 	ShowPage(page)
+	ns.UseAddonFont(menu)
 	-- Closing the main window closes the menu too, as every step works through it.
 	ns.Window():HookScript("OnHide", function() menu:Hide() end)
 end
