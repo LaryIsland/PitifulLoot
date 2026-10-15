@@ -55,6 +55,37 @@ local queueFont = { size = 52, drop = 3, version = 1 } -- and `file`, from /pl t
 local QUEUE_PLACE, QUEUE_ALPHA, QUEUE_GREY = 2 / 3, 0.15, 0.8
 local TRADE_REFRESH = 5 -- seconds between redraws of the time left to trade items
 local FOOTER_LEFT, FOOTER_MIDDLE = 14, 23 -- where the footer's text starts, and the height of its middle
+-- The header: the item's name, then the round's timer bar, with what's happening at its top right. The list starts
+-- HEADER_BOTTOM down from the top.
+local HEADER_BOTTOM = 65
+local HEADER_LEFT, HEADER_RIGHT = 60, 14 -- the header's text and bar, in from the portrait and the right edge
+local NAME_TOP, BAR_TOP, BAR_HEIGHT = -31, -48, 13
+local HEADER_TOP = 21 -- the header's top, under the title bar
+local HEADER_MIDDLE = -(HEADER_TOP + HEADER_BOTTOM - 7) / 2 -- the middle of the header's stone, for the waiting line
+local ALERT_SIZE = 16 -- the warning sign, in the title bar
+-- The seconds left of the bar, a point larger than the round's other text and a little off white. The font's digits
+-- aren't all one width, so each count of them has a space of its own, as many of its average digit's width as they
+-- have digits, SECONDS_GAP short of the bar, and they're centred in it: they shift only half as much as they count
+-- down as they would against either edge.
+local SECONDS_GREY, SECONDS_GAP = 0.88, 1
+local DIGIT_GUESS = 6 -- a digit's width until the font can be measured
+local digitWidth -- the font's average digit's width, as it is
+-- The timer bar: the game's plain bar (grey, which it tints for each use) in amber, between orange and yellow, which
+-- its texture darkens to a warm brown that suits the frame; in the loot history's timer frame, the fill inset from its
+-- ends and of its own height.
+local BAR = {
+	background = "lootroll-timer-background", border = "lootroll-timer-border",
+	fill = "Interface\\TargetingFrame\\UI-StatusBar", inset = 2, height = 9, color = { 230 / 255, 156 / 255, 46 / 255 },
+	greedColor = { 140 / 255, 217 / 255, 33 / 255 }, -- a greed roll's: the same, turned towards green, a deep moss green
+}
+-- A greed roll's mark after the item's name: the game's own greed coin, from its loot roll's Greed button.
+local GREED_ICON, GREED_ICON_SIZE = "lootroll-toast-icon-greed-up", 18
+local barDemoGreed = false -- `/pl test bar show greed`: the loop in a greed roll's colour
+-- The item's name and how the round ended start a little right of the bar's left end.
+local TEXT_LEFT = HEADER_LEFT + 2
+local barDemo -- `/pl test bar show`: when the bar started looping, to see it with no roll on
+local BAR_DEMO_SECONDS = 30
+local HEADER_ART_STRETCH = 1.3 -- how much taller than its own shape the header's stone is drawn
 -- The footer's size: an officer's, with room for the buttons, or a member's, one line (MemberFooter). Each is where the
 -- line above it is, where the list and the panels end above that, and the height of the text's middle.
 local FOOTERS = {
@@ -997,48 +1028,117 @@ end
 
 -- Header, footer and tabs ------------------------------------------------------------------------------------------
 
-local function RoundText(m)
-	local text = STATES[m.state] or m.state
-	if m.state == "open" and ns.CanRoll() then text = L.ROUND_ROLL_NOW end
+-- Whether the round has a timer running, when the bar shows.
+local function Timed(m)
+	return m ~= nil and m.ends ~= nil and m.duration ~= nil and m.duration > 0
+end
+
+-- What's happening with the roll: while its timer runs, the seconds left of its bar; after, how it ended, in the
+-- bar's place. Where it dropped is left to the Loot tab, whose groups
+-- are its bosses.
+local function StateText(m)
+	local text
 	if m.state == "reroll" then
 		local rerolls = m.round - 1
 		text = rerolls > 1 and L.ROUND_REROLL_N:format(rerolls) or L.STATE_REROLL
 		if (m.slots or 1) > 1 then text = L.ROUND_FOR_SLOTS:format(text, m.slots) end
+	elseif m.state == "decided" and not m.winners[1] then
+		text = L.ROUND_NO_ROLLS
+	elseif m.state == "awarded" and m.winners[1] then
+		text = L.ROUND_AWARDED_TO:format(NameList(m.winners))
+	elseif m.state ~= "open" then
+		text = STATES[m.state] or m.state
 	end
-	if m.state == "decided" and not m.winners[1] then text = L.ROUND_NO_ROLLS end
-	if m.state == "awarded" and m.rev then text = L.ROUND_AWARDED:format(m.rev) end
-	if m.ends then text = L.ROUND_TIME_LEFT:format(text, math.max(math.ceil(m.ends - GetTime()), 0)) end
-	-- Where it dropped, when known.
-	local source = m.boss and (m.instance .. " - " .. m.boss) or m.instance
-	if source then text = Colored(source, GREY) .. "  ·  " .. text end
-	return text
+	-- While the timer runs, the seconds are left of the bar, so a first round has nothing more to say.
+	if m.ends then return text end
+	return text or STATES.open
 end
 
--- The loot history's timer bar, emptying as the round runs out.
+-- The timer bar, there for as long as the roll is, emptying as the round runs out.
+-- The bar's time left and the round's length: the roll's, or with `/pl test bar show` and no timer running, a loop;
+-- nil if neither.
+local function BarTime(m)
+	if Timed(m) then return math.max(m.ends - GetTime(), 0), m.duration end
+	if barDemo then return BAR_DEMO_SECONDS - (GetTime() - barDemo) % BAR_DEMO_SECONDS, BAR_DEMO_SECONDS end
+end
+
+-- The seconds left, as a bare number left of the bar, under the portrait. With `/pl test bar show` and no timer
+-- running, they're the loop's, and the bar's place is the loop's, not how the roll ended.
+local function UpdateSeconds(m)
+	local left = BarTime(m)
+	local seconds = frame.Seconds
+	local text = left and tostring(math.ceil(left)) or ""
+	local digits = #text
+	if digits > 0 and not digitWidth then
+		-- A font still loading measures as nothing, so it's measured again next time, with a guess meanwhile.
+		seconds:SetText("0123456789")
+		local width = seconds:GetStringWidth() or 0
+		if width > 0 then digitWidth = width / 10 end
+	end
+	if digits > 0 and seconds.digits ~= digits then
+		seconds.digits = digitWidth and digits or nil
+		seconds:ClearAllPoints()
+		seconds:SetPoint("CENTER", frame.Timer, "LEFT", -SECONDS_GAP - digits * (digitWidth or DIGIT_GUESS) / 2, 0)
+	end
+	seconds:SetText(text)
+	if barDemo and not Timed(m) then frame.Outcome:SetText("") end
+end
+
 local function UpdateTimer()
 	local m = ns.live.mirror
 	local timer = frame.Timer
-	if not (m and m.ends and m.duration and m.duration > 0) then return timer:Hide() end
-	local left = math.max(m.ends - GetTime(), 0) / m.duration
+	local timeLeft, duration = BarTime(m)
+	if not timeLeft then return timer:Hide() end
 	timer:Show()
+	local left = timeLeft / duration
 	timer.Fill:SetShown(left > 0)
-	timer.Fill:SetWidth(math.max((timer:GetWidth() - 4) * left, 1))
+	timer.Fill:SetWidth(math.max((timer:GetWidth() - 2 * BAR.inset) * left, 1))
+end
+
+-- Shows the bar looping, or stops, with no roll on (`/pl test bar show`); returns whether it's on.
+function ns.ToggleBarDemo(greed)
+	barDemo = not barDemo and GetTime() or nil
+	barDemoGreed = greed and true or false
+	ns.RefreshWindow()
+	return barDemo ~= nil
 end
 
 local function UpdateHeader()
 	local m = ns.live.mirror
+	local alerting = ns.warnings[1] ~= nil
 	if m then
 		frame:SetPortraitToAsset(ItemIcon(m.item) or ADDON_ICON)
-		local text = ItemText(m.item)
-		if m.copies > 1 then text = text .. Colored(" x" .. m.copies, HIGHLIGHT_FONT_COLOR) end
-		if m.greed then text = text .. Colored(L.HEADER_GREED, HIGHLIGHT_FONT_COLOR) end
-		frame.ItemName:SetText(text)
-		frame.RoundText:SetText(RoundText(m))
+		local suffix = ""
+		if m.copies > 1 then suffix = " x" .. m.copies end
+		-- The coin's art has a margin of its own, so it needs no space before it.
+		if m.greed then suffix = suffix .. CreateAtlasMarkup(GREED_ICON, GREED_ICON_SIZE, GREED_ICON_SIZE) end
+		frame.ItemName:SetText(ItemText(m.item))
+		frame.ItemSuffix:SetText(suffix)
+		local timed = Timed(m)
+		frame.Outcome:SetText(timed and "" or StateText(m))
+		frame.Waiting:SetText("")
 	else
 		frame:SetPortraitToAsset(ADDON_ICON)
 		frame.ItemName:SetText("")
-		frame.RoundText:SetText(ns.live.writer and L.HEADER_WAITING:format(ns.ColoredName(ns.WriterShownAs())) or "")
+		frame.ItemSuffix:SetText("")
+		frame.Outcome:SetText("")
+		-- With no roll, who's to start one, large across the header.
+		frame.Waiting:SetText(ns.live.writer and L.HEADER_WAITING:format(ns.ColoredName(ns.WriterShownAs())) or "")
 	end
+	UpdateSeconds(m)
+	-- A greed roll's bar is greener, as is the loop's with `/pl test bar show greed`.
+	local greed = Timed(m) and m.greed or (not Timed(m) and barDemo and barDemoGreed)
+	frame.Timer.Fill:SetVertexColor(unpack(greed and BAR.greedColor or BAR.color))
+	frame.Alert:SetShown(alerting)
+	-- The name is as wide as it needs to be, up to what's left beside its copies, so it's the name that's cut short.
+	local name, suffix = frame.ItemName, frame.ItemSuffix
+	local suffixText = suffix:GetText()
+	local room = WIDTH - TEXT_LEFT - HEADER_RIGHT
+		- (suffixText and suffixText ~= "" and (suffix:GetStringWidth() or 0) or 0)
+	local full = (name.GetUnboundedStringWidth and name:GetUnboundedStringWidth()) or name:GetStringWidth() or 0
+	name:SetWidth(full > 0 and math.min(full, room) or room)
+	frame.Waiting:SetWidth(WIDTH - 2 * HEADER_LEFT)
+	frame.Outcome:SetWidth(WIDTH - TEXT_LEFT - HEADER_RIGHT)
 	UpdateTimer()
 end
 
@@ -1111,7 +1211,10 @@ local function UpdateFooter()
 		title = title .. " " .. Colored(ns.ViewAsRaider() and L.TEST_WINDOW_TITLE_AS_RAIDER or L.TEST_WINDOW_TITLE, RED_FONT_COLOR)
 	end
 	frame:SetTitle(title)
-	frame.Alert:SetShown(ns.warnings[1] ~= nil)
+	-- The warning sign just after the title's words: the title is centred, and its frame can be wider than they are.
+	local titleText = frame.TitleContainer.TitleText
+	frame.Alert:ClearAllPoints()
+	frame.Alert:SetPoint("LEFT", titleText, "CENTER", (titleText:GetStringWidth() or 0) / 2 + 4, 0)
 end
 
 -- One main button for whatever the writer does next, as the base game's panels have, plus Cancel.
@@ -1301,7 +1404,7 @@ local SECTION_GAP = 12 -- between a section's title and the options either side 
 -- for them all. Officer options only show for officers who tick the box in the bottom right corner.
 local function CreateOptions(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", 20, -92)
+	scroll:SetPoint("TOPLEFT", 20, -(HEADER_BOTTOM + 12))
 	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
 	scroll.ScrollBar:SetHideIfUnscrollable(true)
 	scroll.ScrollBar:ClearAllPoints()
@@ -1616,7 +1719,7 @@ end
 
 local function CreateRaid(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", 20, -92)
+	scroll:SetPoint("TOPLEFT", 20, -(HEADER_BOTTOM + 12))
 	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
 	scroll.ScrollBar:SetHideIfUnscrollable(true)
 	scroll.ScrollBar:ClearAllPoints()
@@ -1723,6 +1826,24 @@ end
 -- Crops the background art to the area it fills, keeping the art's own shape, so a taller window shows less of its
 -- sides instead of stretching it. The crop centres on a point 60% of the way across, where the art is most
 -- interesting, rather than its middle.
+-- The header's stone, as wide as the header and a little taller than its own shape (HEADER_ART_STRETCH): its bottom at
+-- the header's bottom, and whatever's taller than the header cut off its top (the art's darkest part). Art shorter than
+-- the header is left stretched to fit.
+local function FitHeaderArt()
+	local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("groupfinder-Stat-StoneBG")
+	local art = frame and frame.HeaderArt
+	if not info or not art then return end
+	local width, height = art:GetWidth(), art:GetHeight()
+	if not width or not height or width <= 0 or height <= 0 then return end
+	local source = info.file or info.filename
+	local shown = info.height * width / info.width * HEADER_ART_STRETCH -- the art's height at the header's width
+	if not source or shown <= height then return end
+	-- As NineSlice does: crop coordinates are in the art's whole file, so the texture shows the file, not the atlas.
+	art:SetTexture(source)
+	local top, bottom = info.topTexCoord, info.bottomTexCoord
+	art:SetTexCoord(info.leftTexCoord, info.rightTexCoord, bottom - (bottom - top) * height / shown, bottom)
+end
+
 local function FitBackground()
 	local info = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("groupfinder-background")
 	local background = frame and frame.Background
@@ -1862,13 +1983,14 @@ local function Create()
 	-- The Who list's layout: a stone header over the group finder background, framed by the inside border.
 	local background = Texture(frame, "BACKGROUND", "groupfinder-background", 1)
 	frame.Background = background
-	background:SetPoint("TOPLEFT", 4, -80)
+	background:SetPoint("TOPLEFT", 4, -HEADER_BOTTOM)
 	background:SetPoint("BOTTOMRIGHT", -4, 3)
 	local header = Texture(frame, "BACKGROUND", "groupfinder-Stat-StoneBG", 2)
+	frame.HeaderArt = header
 	header:SetPoint("TOPLEFT", 2, -21)
 	header:SetPoint("BOTTOMRIGHT", background, "TOPRIGHT", 0, -7)
 	local inside = Texture(frame, "BORDER", "common-insideframe")
-	inside:SetPoint("TOPLEFT", 3, -78)
+	inside:SetPoint("TOPLEFT", 3, -(HEADER_BOTTOM - 2))
 	inside:SetPoint("BOTTOMRIGHT", -4, 3)
 	local topLine = Texture(frame, "ARTWORK", "groupfinder-ScrollLine")
 	topLine:SetPoint("LEFT", background, "TOPLEFT", 0, -1)
@@ -1882,16 +2004,21 @@ local function Create()
 
 	-- The item being rolled for, its round, and the round's timer.
 	frame.ItemName = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalMed2")
-	frame.ItemName:SetPoint("TOPLEFT", 62, -30)
-	frame.ItemName:SetPoint("RIGHT", -40, 0)
+	frame.ItemName:SetPoint("TOPLEFT", TEXT_LEFT, NAME_TOP)
 	frame.ItemName:SetJustifyH("LEFT")
 	frame.ItemName:SetWordWrap(false)
-	frame.RoundText = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-	frame.RoundText:SetPoint("TOPLEFT", frame.ItemName, "BOTTOMLEFT", 0, -4)
-	frame.RoundText:SetJustifyH("LEFT")
+	-- How many copies (and if it's a greed roll), in white straight after the name, never cut short.
+	frame.ItemSuffix = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightMed2")
+	frame.ItemSuffix:SetPoint("LEFT", frame.ItemName, "RIGHT", 0, 0)
+	frame.ItemSuffix:SetWordWrap(false)
+	frame.Waiting = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	frame.Waiting:SetPoint("CENTER", frame, "TOP", 0, HEADER_MIDDLE)
+	frame.Waiting:SetJustifyH("CENTER")
+	frame.Waiting:SetWordWrap(true)
+	frame.Waiting:SetMaxLines(2)
 	local itemHit = CreateFrame("Button", nil, frame)
 	itemHit:SetPoint("TOPLEFT", 0, 0)
-	itemHit:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", WIDTH - 40, -56)
+	itemHit:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", WIDTH - HEADER_RIGHT, BAR_TOP + 2)
 	-- Officers can right-click the item to set its roles, as on the Loot tab.
 	local function CanSetRoles(m)
 		return m and AsOfficer() and not ns.ForEveryone(m.item)
@@ -1912,20 +2039,39 @@ local function Create()
 	frame.ItemHit = itemHit
 
 	local timer = CreateFrame("Frame", nil, frame)
-	timer:SetPoint("TOPLEFT", 62, -60)
-	timer:SetPoint("RIGHT", -14, 0)
-	timer:SetHeight(13)
-	Texture(timer, "BACKGROUND", "lootroll-timer-background"):SetAllPoints()
-	timer.Fill = Texture(timer, "ARTWORK", "lootroll-timer-fill")
-	timer.Fill:SetPoint("LEFT", 2, 0)
-	timer.Fill:SetHeight(9)
-	Texture(timer, "OVERLAY", "lootroll-timer-border"):SetAllPoints()
+	timer:SetPoint("TOPLEFT", HEADER_LEFT, BAR_TOP)
+	timer:SetPoint("RIGHT", -HEADER_RIGHT, 0)
+	timer:SetHeight(BAR_HEIGHT)
+	timer.Background = timer:CreateTexture(nil, "BACKGROUND")
+	timer.Background:SetAllPoints()
+	timer.Fill = timer:CreateTexture(nil, "ARTWORK")
+	timer.Border = timer:CreateTexture(nil, "OVERLAY")
+	timer.Border:SetAllPoints()
 	frame.Timer = timer
+	timer.Background:SetAtlas(BAR.background)
+	timer.Border:SetAtlas(BAR.border)
+	timer.Fill:SetTexture(BAR.fill)
+	timer.Fill:SetPoint("LEFT", BAR.inset, 0)
+	timer.Fill:SetHeight(BAR.height)
+	-- What's happening with the roll: the seconds left of the bar, and once the round's over, how it ended in the
+	-- bar's place.
+	local secondsFont = CreateFont("PitifulLootSecondsFont")
+	secondsFont:CopyFontObject(GameFontHighlightSmall)
+	local file, size, flags = secondsFont:GetFont()
+	if file and size then secondsFont:SetFont(file, size + 1, flags or "") end
+	frame.Seconds = frame:CreateFontString(nil, "ARTWORK")
+	frame.Seconds:SetFontObject(secondsFont)
+	frame.Seconds:SetTextColor(SECONDS_GREY, SECONDS_GREY, SECONDS_GREY)
+	frame.Seconds:SetJustifyH("CENTER")
+	frame.Outcome = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	frame.Outcome:SetPoint("LEFT", timer, "LEFT", TEXT_LEFT - HEADER_LEFT, 0)
+	frame.Outcome:SetJustifyH("LEFT")
+	frame.Outcome:SetWordWrap(false)
 
-	-- A warning sign while something didn't match what this client saw (6.3).
-	local alert = CreateFrame("Button", nil, frame)
-	alert:SetSize(22, 22)
-	alert:SetPoint("TOPRIGHT", -12, -30)
+	-- A warning sign while something didn't match what this client saw (6.3), in the title bar just after the addon's
+	-- name, where it's about the addon rather than the roll (and above the frame's border, as the title is).
+	local alert = CreateFrame("Button", nil, frame.TitleContainer)
+	alert:SetSize(ALERT_SIZE, ALERT_SIZE)
 	alert:SetNormalTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
 	alert:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1946,7 +2092,7 @@ local function Create()
 
 	-- The list, with the minimal scroll bar the base game's lists use.
 	frame.ScrollBox = CreateFrame("Frame", nil, frame, "WowScrollBoxList")
-	frame.ScrollBox:SetPoint("TOPLEFT", 12, -88)
+	frame.ScrollBox:SetPoint("TOPLEFT", 12, -(HEADER_BOTTOM + 8))
 	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, FOOTERS.officer.list)
 	frame.ScrollBar = CreateFrame("EventFrame", nil, frame, "MinimalScrollBar")
 	frame.ScrollBar:SetPoint("TOPLEFT", frame.ScrollBox, "TOPRIGHT", 5, -4)
@@ -2082,8 +2228,8 @@ local function Create()
 			ShowRaiderTooltip(row, row.member)
 		end
 		local m = ns.live.mirror
-		if m and m.ends then
-			frame.RoundText:SetText(RoundText(m))
+		if (m and m.ends) or barDemo then
+			UpdateSeconds(m)
 			UpdateTimer()
 		end
 		local now
@@ -2098,8 +2244,12 @@ local function Create()
 		end
 	end)
 	frame:SetScript("OnShow", ns.RefreshWindow)
-	frame:SetScript("OnSizeChanged", FitBackground)
+	frame:SetScript("OnSizeChanged", function()
+		FitBackground()
+		FitHeaderArt()
+	end)
 	FitBackground()
+	FitHeaderArt()
 	ns.UseAddonFont(frame)
 	frame:Hide()
 end
@@ -2161,6 +2311,9 @@ end
 -- The queue's numbers set their font themselves; the rest of the text follows the font objects (Fonts.lua).
 ns.Listen("FONT_CHANGED", function()
 	queueFont.version = queueFont.version + 1
+	-- The seconds' digits are measured again in the new font.
+	digitWidth = nil
+	if frame then frame.Seconds.digits = nil end
 	RefreshSoon()
 end)
 -- New loot opens its own group and the items awaiting trade, folds the other groups away, and opens the window on

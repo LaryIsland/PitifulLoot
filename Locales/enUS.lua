@@ -46,13 +46,10 @@ L["STATE_CANCELLED"] = "Cancelled"
 L["STATE_AWARDED"] = "Awarded"
 L["STATE_DISENCHANTED"] = "Disenchanted" -- also on the Loot tab
 L["STATE_KEPT"] = "Kept to sell" -- also on the Loot tab
-L["ROUND_ROLL_NOW"] = "Roll now"
 L["ROUND_REROLL_N"] = "Reroll %d"
 L["ROUND_FOR_SLOTS"] = "%s for %d" -- a reroll, and how many copies it's for
 L["ROUND_NO_ROLLS"] = "No rolls"
-L["ROUND_AWARDED"] = "Awarded (revision %d)"
-L["ROUND_TIME_LEFT"] = "%s: %ds left"
-L["HEADER_GREED"] = " (greed)" -- after the item's name
+L["ROUND_AWARDED_TO"] = "Awarded to %s" -- the winners, once it's handed out
 L["HEADER_WAITING"] = "Waiting for %s to start a roll."
 
 -- The footer, and /pl status.

@@ -48,6 +48,7 @@ local HELP = {
 	"/pl test stats [item | target | known] - every stat the game gives for your equipped gear and the latest loot (or an item, your target's gear, or the items seen on the beta so far), with their roles and fits, to copy",
 	"/pl test raid [players] [edge] - fill the Raid tab with made-up raiders (20, up to 40), some with roles unknown (edge: one of each kind); left-click fakes an inspect; again to empty it",
 	"/pl test fonts [number [size [drop]]] - list the fonts the game has, or try one on the Loot tab's queue numbers until you reload",
+	"/pl test bar show [greed] - show the header's timer bar looping with no roll on (in a greed roll's colour), or stop",
 }
 
 local fakes = {} -- made-up rollers: { id, name }
@@ -1221,6 +1222,14 @@ function test.fonts(args)
 	local _, size, drop = ns.SetQueueFont(font[1], tonumber(args[4]), tonumber(args[5]))
 	ns.Print(("Queue numbers: %s, size %s, dropped %s.%s"):format(font[1], size, drop,
 		HasFont(font[1]) == false and " The game hasn't got it, so they're in its main font." or ""))
+end
+
+function test.bar(args)
+	if args[3] ~= "show" then
+		return ns.Print("/pl test bar show [greed] shows the header's timer bar looping with no roll on.")
+	end
+	ns.Print(ns.ToggleBarDemo(args[4] == "greed") and "The timer bar is showing, looping; /pl test bar show again stops it."
+		or "The timer bar shows only for a roll again.")
 end
 
 function test.help()
