@@ -1,6 +1,6 @@
 {
 	"library": ["libs/"],
 	"globals": {
-		"write": ["PitifulLoot_OnAddonCompartmentClick"]
+		"write": ["PitifulLoot_OnAddonCompartmentClick", "PitifulLoot_Roll", "PitifulLoot_Pass"]
 	}
 }

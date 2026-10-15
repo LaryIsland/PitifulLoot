@@ -7,7 +7,7 @@
 ## IconTexture: Interface\Icons\INV_Misc_Dice_02
 ## AddonCompartmentFunc: PitifulLoot_OnAddonCompartmentClick
 ## SavedVariables: PitifulLootDB, PitifulLootCapture
-## OptionalDeps: Ace3
+## OptionalDeps: Ace3, LibSharedMedia-3.0
 
 embeds.xml
 Locales\enUS.lua
@@ -33,10 +33,12 @@ Leavers.lua
 Session.lua
 Loot.lua
 Queue.lua
+Alerts.lua
 Trades.lua
 Fonts.lua
 UI.lua
 MinimapButton.lua
+ItemTooltips.lua
 Options.lua
 Commands.lua
 # Test mode and the test menu, a tutorial (its debugging commands are temporary; design document 5.5).

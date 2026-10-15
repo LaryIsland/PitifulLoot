@@ -227,6 +227,14 @@ function commands.status()
 	for i = math.max(#ns.warnings - 4, 1), #ns.warnings do ns.Print("|cffff4040" .. ns.warnings[i].text .. "|r") end
 end
 
+-- Key bindings (Bindings.xml), under Pitiful Loot in the game's Key Bindings, none bound by default: rolling, as your
+-- row's Click to roll does, and passing, as /pl pass does (in a reroll too). Neither does anything when you can't roll.
+BINDING_HEADER_PITIFULLOOT = "Pitiful Loot"
+BINDING_NAME_PITIFULLOOT_ROLL = L.BINDING_ROLL
+BINDING_NAME_PITIFULLOOT_PASS = L.BINDING_PASS
+function PitifulLoot_Roll() ns.Roll() end
+function PitifulLoot_Pass() ns.Pass() end
+
 SLASH_PITIFULLOOT1 = "/pl"
 SLASH_PITIFULLOOT2 = "/pitifulloot"
 SlashCmdList.PITIFULLOOT = function(text)

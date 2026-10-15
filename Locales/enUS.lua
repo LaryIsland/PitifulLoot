@@ -176,6 +176,11 @@ L["PITY_ODDS"] = "%d%% vs 0 pity" -- %% is a percent sign
 L["PITY_OTHER_RAID"] = "Other" -- items with no recorded raid, such as ones set by hand
 L["PITY_UNKNOWN_BOSS"] = "Unknown boss"
 
+-- The game's own item tooltips, with the Show Pity in Item Tooltips option on
+
+L["ITEM_TOOLTIP_PITY"] = "Your pity: %s" -- the pity, such as +30, in white
+L["ITEM_TOOLTIP_WON"] = "You've won this item"
+
 -- The Raid tab -----------------------------------------------------------------------------------------------------
 
 L["ROLE_TANK"] = "Tank"
@@ -249,6 +254,11 @@ L["OPT_AUTO_ROLL_TIP"] = "Rolls for you.\n{Rerolls only}: only rolls when you're
 L["OPT_AUTO_ROLL_OFF"] = "Off"
 L["OPT_AUTO_ROLL_REROLLS"] = "Rerolls only"
 L["OPT_AUTO_ROLL_ALL"] = "Every roll"
+L["OPT_ROLL_SOUND"] = "Play a Sound When You Can Roll"
+L["OPT_SOUND_NONE"] = "None"
+L["OPT_SOUND_READY_CHECK"] = "Ready Check"
+L["OPT_ROLL_FLASH"] = "Flash the Taskbar When You Can Roll"
+L["OPT_ROLL_FLASH_TIP"] = "Flash the taskbar icon when a roll starts while you're tabbed out."
 L["OPT_FONT"] = "Font"
 L["OPT_FONT_TIP"] = "The font for all of the addon's text."
 L["OPT_AUTO_SHOW"] = "Show When I Can Roll"
@@ -263,6 +273,8 @@ L["OPT_HIDE_WON"] = "Hide Won Items"
 L["OPT_HIDE_WON_TIP"] = "Hide items you've won from the {My Pity} tab."
 L["OPT_MINIMAP_BUTTON"] = "Minimap Button"
 L["OPT_MINIMAP_BUTTON_TIP"] = "Show a minimap button: left-click opens the addon, right-click for options."
+L["OPT_ITEM_TOOLTIP_PITY"] = "Show Pity in Item Tooltips"
+L["OPT_ITEM_TOOLTIP_PITY_TIP"] = "See your pity on item tooltips."
 L["OPT_SHOW_RAID_TAB"] = "Show the Raid Tab"
 L["OPT_SHOW_RAID_TAB_TIP"] = "Show the {Raid} tab, with every raider's role."
 L["OPT_TOOLTIP_HINTS"] = "Show Click Hints in Tooltips"
@@ -405,6 +417,11 @@ L["TEST_MSG_TRADED_FROM"] = "%s traded you %s." -- the test officer, the items
 L["TEST_MSG_AS_RAIDER_ON"] = "The window now shows what a raider without officer powers sees."
 L["TEST_MSG_AS_RAIDER_OFF"] = "The window shows your officer controls again."
 L["TEST_MSG_REOPEN"] = "You can open the tutorial again any time with {/pl test}."
+
+-- Key bindings, under Pitiful Loot in the game's Key Bindings --------------------------------------------------
+
+L["BINDING_ROLL"] = "Roll"
+L["BINDING_PASS"] = "Pass"
 
 -- Slash commands (/pl help). The command words themselves stay in English. --------------------------------------
 

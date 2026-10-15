@@ -1456,6 +1456,8 @@ local function CreateOptions(parent)
 	-- once the mouse is off the whole control, rather than flickering as it crosses from one part to the next (as on
 	-- the test menu).
 	local function Tooltip(region, option)
+		-- An option without a tip has no tooltip, as its name alone would only repeat its label.
+		if not option.tooltip then return end
 		local function Show()
 			GameTooltip:SetOwner(region, "ANCHOR_RIGHT")
 			GameTooltip_SetTitle(GameTooltip, option.title or option.name)
@@ -1512,7 +1514,12 @@ local function CreateOptions(parent)
 			local dropdown = CreateFrame("DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
 			dropdown:SetWidth(150)
 			dropdown:SetupMenu(function(_, root)
-				for _, choice in ipairs(option.choices) do
+				-- Choices can change while the game's running (sounds other addons share), so they're a function then.
+				local choices = option.choices
+				if type(choices) == "function" then choices = choices() end
+				-- A long list scrolls rather than running off the screen.
+				if #choices > 20 then root:SetScrollMode(20 * 20) end
+				for _, choice in ipairs(choices) do
 					root:CreateRadio(choice[2], function() return ns.settings[option.key] == choice[1] end,
 						function() ns.SetOption(option.key, choice[1]) end)
 				end

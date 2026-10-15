@@ -1,0 +1,10 @@
+<!-- Key bindings, under Pitiful Loot in the game's Key Bindings (AddOns). None has a key by default, as a default could
+take one the player uses for something else (design document 1.1). Their names are set in Commands.lua. -->
+<Bindings>
+	<Binding name="PITIFULLOOT_ROLL" header="PITIFULLOOT" category="ADDONS">
+		PitifulLoot_Roll()
+	</Binding>
+	<Binding name="PITIFULLOOT_PASS" category="ADDONS">
+		PitifulLoot_Pass()
+	</Binding>
+</Bindings>
