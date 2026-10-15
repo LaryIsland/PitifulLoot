@@ -866,7 +866,7 @@ function ns.Award()
 	})
 end
 
--- A BoP item no one rolled on is disenchanted, and a BoE no one greed-rolled on is kept to sell (it's worth more on
+-- A BoP item no one rolled on is disenchanted, and a BoE no one greed-rolled on is auctioned (it's worth more on
 -- the auction house). Nothing goes in the ledger, as no one rolled. The master looter takes it, to disenchant, hand to
 -- an enchanter, or sell.
 local function TakeUnwanted(sell)

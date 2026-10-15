@@ -164,7 +164,7 @@ function commands.close() ns.CloseRound() end
 function commands.cancel() ns.CancelRoll() end
 function commands.award() ns.Award() end
 function commands.disenchant() ns.Disenchant() end
-function commands.sell() ns.KeepToSell() end
+function commands.auction() ns.KeepToSell() end
 function commands.pass() ns.Pass() end
 function commands.pity(args) ShowPity(args[2]) end
 function commands.log(args) ShowLog(tonumber(args[2])) end

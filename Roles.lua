@@ -159,36 +159,41 @@ local function TalentRole(class, talents)
 	return nil, "nocapstone"
 end
 
--- The player's own role and gear's say are asked for several times a redraw (the Raid tab, the roles the writer
--- sends), and each means reading the whole talent tree, or every item worn: the answer is kept for the rest of the
--- frame, and forgotten at once when the talents or gear change.
-local mine -- { at = GetTime(), role, why, gear }
+-- The player's own role and gear's say are asked for often (the Raid tab, the roles the writer sends), and each
+-- means reading the whole talent tree (which costs the game's own tables for every node, 150 KB a read on the beta),
+-- or every item worn: the answer is kept until the talents or gear change. One that can't be settled yet (talents
+-- not loaded, or gear still loading) isn't kept, so it's read again next time.
+local mine -- { role, why, read, gear, gearRead }
 local function ForgetMine() mine = nil end
 for _, event in ipairs({ "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
 	"PLAYER_EQUIPMENT_CHANGED", "PLAYER_ENTERING_WORLD", "GET_ITEM_INFO_RECEIVED" }) do
 	ns.On(event, ForgetMine)
 end
 local function Mine()
-	local now = GetTime()
-	if not mine or mine.at ~= now then mine = { at = now } end
+	mine = mine or {}
 	return mine
 end
 
 -- The player's role as their talents suggest, for a class that can fill more than one; nil until the client has
 -- their talents. Without one, nil and why (a key of ns.UNKNOWN_REASONS).
+-- Third, whether the answer will hold until the talents change.
 local function ReadMyRole()
 	local _, class = UnitClass("player")
-	if not CAPSTONES[class] or not C_SpecializationInfo.IsInitialized() then return nil end
+	if not CAPSTONES[class] then return nil, nil, true end
+	if not C_SpecializationInfo.IsInitialized() then return nil, nil, false end
 	local talents = ns.ReadTalents()
-	if talents then return TalentRole(class, talents) end
-	return nil, "unreadable"
+	if talents then
+		local role, why = TalentRole(class, talents)
+		return role, why, why ~= "unreadable"
+	end
+	return nil, "unreadable", false
 end
 
 function ns.MyRole()
 	local kept = Mine()
 	if not kept.read then
-		local role, why = ReadMyRole()
-		kept.role, kept.why, kept.read = role, why, true
+		local role, why, settled = ReadMyRole()
+		kept.role, kept.why, kept.read = role, why, settled
 	end
 	return kept.role, kept.why
 end
@@ -212,7 +217,8 @@ function ns.MyGearRole()
 	local kept = Mine()
 	if not kept.gearRead then
 		local _, class = UnitClass("player")
-		kept.gear, kept.gearRead = GearRole("player", class), true
+		local role, loading = GearRole("player", class)
+		kept.gear, kept.gearRead = role, not loading
 	end
 	return kept.gear
 end

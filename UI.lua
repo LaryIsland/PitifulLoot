@@ -5,9 +5,13 @@ local L = ns.L
 -- with side tabs like the group finder, a stone header and list rows like its Who list, and the timer bar and
 -- checkmark from the loot history. It shows the roll in progress (5.2), the master looter's loot, and your pity.
 
-local WIDTH, HEIGHT = 384, 524
+local WIDTH, HEIGHT = 384, 542 -- tall enough for the Options tab without officer options, an officer's or a member's, not to scroll
 local ROW_HEIGHT = 52
 local ROW_SPACING = 2 -- the list's gap between rows
+-- The list, in from the window's sides: more on the right, for its scroll bar. What's centred on the window but placed
+-- by the list moves by half the difference.
+local LIST_LEFT, LIST_RIGHT = 12, 26
+local LIST_TO_MIDDLE = (LIST_RIGHT - LIST_LEFT) / 2
 local VALUE_WIDTH = 104 -- room on the right of a row you can roll or pass from, for its value and the pass button
 local VALUE_INSET = 12 -- the value and note, from the row's right edge
 local VALUE_GAP = 10 -- between a row's text and the value or note beside it
@@ -382,17 +386,26 @@ local function TradeLines(out)
 			if pending.id ~= me then detail[#detail + 1] = L.TRADE_FOR:format(ns.ColoredName(pending.id)) end
 			if pending.from and not ns.IsMe(pending.from) then detail[#detail + 1] = L.TRADE_FROM:format(ns.ColoredName(pending.from)) end
 			local click, hints
-			if officer then
-				-- In test mode the loot isn't really in your bags, so it's traded as if it were.
-				local canTrade = left > 0 and pending.id ~= me and (ns.HoldsItem(pending.item) or ns.IsTestMode())
+			-- An officer holding a copy opens a trade with its winner; a winner, officer or not, opens one with whoever
+			-- holds theirs. Either way, the officer's client puts the copies in. In test mode the loot isn't really in
+			-- your bags, so it's traded as if it were.
+			local canTrade = officer and left > 0 and pending.id ~= me and (ns.HoldsItem(pending.item) or ns.IsTestMode())
+			local canFetch = left > 0 and pending.id == me and pending.from ~= nil and not ns.IsMe(pending.from)
+			if officer or canFetch then
 				hints = {}
-				if canTrade then hints[1] = L.HINT_TRADE:format(ns.ColoredName(pending.id)) end
-				hints[#hints + 1] = left > 0 and L.HINT_TRADE_DONE or L.HINT_TRADE_CLEAR
+				if canTrade then
+					hints[1] = L.HINT_TRADE:format(ns.ColoredName(pending.id))
+				elseif canFetch then
+					hints[1] = L.HINT_TRADE_WITH:format(ns.ColoredName(pending.from))
+				end
+				if officer then hints[#hints + 1] = left > 0 and L.HINT_TRADE_DONE or L.HINT_TRADE_CLEAR end
 				click = function(button)
 					if button == "RightButton" then
-						ns.MarkTraded(pending.sid, pending.id)
+						if officer then ns.MarkTraded(pending.sid, pending.id) end
 					elseif canTrade then
 						ns.OfferTrade(pending.id)
+					elseif canFetch then
+						ns.OfferTrade(pending.from)
 					end
 				end
 			end
@@ -1186,7 +1199,7 @@ local function UpdateFooter()
 		frame.footerAt = at
 		frame.BottomLine:SetPoint("LEFT", frame, "BOTTOMLEFT", 4, footer.line)
 		frame.BottomLine:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -4, footer.line)
-		frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, footer.list)
+		frame.ScrollBox:SetPoint("BOTTOMRIGHT", -LIST_RIGHT, footer.list)
 		frame.Raid:SetPoint("BOTTOMRIGHT", -30, footer.list)
 		frame.Writer:SetPoint("RIGHT", frame, "BOTTOMRIGHT", -FOOTER_LEFT, footer.middle)
 	end
@@ -1399,6 +1412,25 @@ local function Texture(parent, layer, atlas, subLevel)
 end
 
 local SECTION_GAP = 12 -- between a section's title and the options either side of it
+local OPTION_RIGHT = 2 -- the dropdowns and sliders, in from the right of the options (and so from the scroll bar)
+
+-- The window's scroll bars, without the minimal scroll bar's arrows: its track runs the bar's full height where it
+-- stopped short of them. The mouse wheel and the thumb still scroll. Each sits SCROLL_BAR_GAP right of its list or
+-- panel, and SCROLL_BAR_DROP lower at the bottom.
+local SCROLL_BAR_GAP, SCROLL_BAR_DROP = 9, 1
+local function WithoutArrows(bar)
+	for _, key in ipairs({ "Back", "Forward" }) do
+		local arrow = bar[key]
+		if type(arrow) == "table" then arrow:Hide() end
+	end
+	local track = bar.Track
+	if type(track) == "table" then
+		track:ClearAllPoints()
+		track:SetPoint("TOP")
+		track:SetPoint("BOTTOM")
+	end
+end
+ns.ScrollBarWithoutArrows = WithoutArrows -- the test menu's too
 
 -- The Options tab: the options (Options.lua) with the base game's own controls, scrolling if the window is too short
 -- for them all. Officer options only show for officers who tick the box in the bottom right corner.
@@ -1406,10 +1438,12 @@ local function CreateOptions(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 20, -(HEADER_BOTTOM + 12))
 	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
-	scroll.ScrollBar:SetHideIfUnscrollable(true)
+	-- Its scroll bar always shows, as the other tabs' do.
+	scroll.ScrollBar:SetHideIfUnscrollable(false)
 	scroll.ScrollBar:ClearAllPoints()
-	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 7, 0)
-	scroll.ScrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 7, 0)
+	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", SCROLL_BAR_GAP, 0)
+	scroll.ScrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", SCROLL_BAR_GAP, -SCROLL_BAR_DROP)
+	WithoutArrows(scroll.ScrollBar)
 	local panel = CreateFrame("Frame", nil, scroll)
 	panel:SetSize(WIDTH - 50, 1)
 	scroll:SetScrollChild(panel)
@@ -1418,14 +1452,25 @@ local function CreateOptions(parent)
 	-- visible art starts and ends, below the row's top.
 	local rows = {}
 
+	-- A control's tooltip. A slider's bar and arrows take the mouse themselves, so they show it too, and it only goes
+	-- once the mouse is off the whole control, rather than flickering as it crosses from one part to the next (as on
+	-- the test menu).
 	local function Tooltip(region, option)
-		region:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		local function Show()
+			GameTooltip:SetOwner(region, "ANCHOR_RIGHT")
 			GameTooltip_SetTitle(GameTooltip, option.title or option.name)
 			GameTooltip_AddNormalLine(GameTooltip, option.tooltip, true)
 			GameTooltip:Show()
-		end)
-		region:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end
+		local function Leave()
+			if not region:IsMouseOver() then GameTooltip:Hide() end
+		end
+		region:SetScript("OnEnter", Show)
+		region:SetScript("OnLeave", Leave)
+		for _, part in ipairs({ region:GetChildren() }) do
+			part:HookScript("OnEnter", Show)
+			part:HookScript("OnLeave", Leave)
+		end
 	end
 
 	for _, option in ipairs(ns.OPTIONS) do
@@ -1447,7 +1492,7 @@ local function CreateOptions(parent)
 		elseif option.kind == "slider" then
 			local label = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 			label:SetText(option.name)
-			-- The slider's value is drawn to its right, so the slider stops short of the edge to leave room for it.
+			-- The slider's value is drawn to its left, so it runs to the right edge, as the dropdowns do.
 			local slider = CreateFrame("Frame", nil, panel, "MinimalSliderWithSteppersTemplate")
 			slider:SetSize(150, 20)
 			slider:RegisterCallback(MinimalSliderWithSteppersMixin.Event.OnValueChanged, function(_, value)
@@ -1455,10 +1500,10 @@ local function CreateOptions(parent)
 			end, panel)
 			Tooltip(slider, option)
 			row.regions[1] = { label, "TOPLEFT", 8, -6 }
-			row.regions[2] = { slider, "TOPRIGHT", -56, -2 }
+			row.regions[2] = { slider, "TOPRIGHT", -OPTION_RIGHT, -2 }
 			row.update = function()
 				slider:Init(ns.settings[option.key], option.min, option.max, (option.max - option.min) / option.step,
-					{ [MinimalSliderWithSteppersMixin.Label.Right] = option.format })
+					{ [MinimalSliderWithSteppersMixin.Label.Left] = option.format })
 			end
 			row.height, row.top, row.bottom = 30, 2, 22
 		elseif option.kind == "dropdown" then
@@ -1474,7 +1519,7 @@ local function CreateOptions(parent)
 			end)
 			Tooltip(dropdown, option)
 			row.regions[1] = { label, "TOPLEFT", 8, -6 }
-			row.regions[2] = { dropdown, "TOPRIGHT", -4, 0 }
+			row.regions[2] = { dropdown, "TOPRIGHT", -OPTION_RIGHT, 0 }
 			row.update = function() dropdown:GenerateMenu() end
 			row.height, row.top, row.bottom = 32, 0, 25
 		elseif option.kind == "profile" then
@@ -1502,7 +1547,7 @@ local function CreateOptions(parent)
 			end)
 			Tooltip(dropdown, option)
 			row.regions[1] = { label, "TOPLEFT", 8, -6 }
-			row.regions[2] = { dropdown, "TOPRIGHT", -4, 0 }
+			row.regions[2] = { dropdown, "TOPRIGHT", -OPTION_RIGHT, 0 }
 			row.update = function() dropdown:GenerateMenu() end
 			row.height, row.top, row.bottom = 32, 0, 25
 		end
@@ -1563,6 +1608,10 @@ end
 local RAID_ROW_HEIGHT = 18
 local RAID_GAP = 6 -- between the raid groups
 local RAID_SUMMARY_HEIGHT = 26
+-- The summary's counts, as the timer's seconds are placed: the font's digits aren't all one width, so each count takes
+-- its icon's width and as many of the font's average digit as it has digits, then two spaces before the next. They
+-- move only when a count gains or loses a digit, not as a 1 becomes a 0. All measured in the font as it is.
+local raidMeasures = {} -- the average digit, the gap of two spaces, and each icon's (and its space's) width
 local RAID_PANEL_WIDTH = WIDTH - 50
 local RAID_COLUMN_WIDTH = (RAID_PANEL_WIDTH - RAID_GAP) / 2
 local INSPECT_BUTTON_WIDTH = 120
@@ -1721,18 +1770,36 @@ local function CreateRaid(parent)
 	local scroll = CreateFrame("ScrollFrame", nil, parent, "ScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 20, -(HEADER_BOTTOM + 12))
 	scroll:SetPoint("BOTTOMRIGHT", -30, FOOTERS.officer.list)
-	scroll.ScrollBar:SetHideIfUnscrollable(true)
+	-- Its scroll bar always shows, as the Roll, My pity and Loot tabs' does, and in the same place.
+	scroll.ScrollBar:SetHideIfUnscrollable(false)
 	scroll.ScrollBar:ClearAllPoints()
-	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 7, 0)
-	scroll.ScrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 7, 0)
+	scroll.ScrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", SCROLL_BAR_GAP, 0)
+	scroll.ScrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", SCROLL_BAR_GAP, -SCROLL_BAR_DROP)
+	WithoutArrows(scroll.ScrollBar)
 	local panel = CreateFrame("Frame", nil, scroll)
 	panel:SetSize(RAID_PANEL_WIDTH, 1)
 	scroll:SetScrollChild(panel)
 	scroll.Panel = panel
 	-- How many of each role there are, then how many are unchecked and unknown, as question marks in their colours.
-	local summary = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-	summary:SetPoint("LEFT", panel, "TOPLEFT", 2, -RAID_SUMMARY_HEIGHT / 2 + 2)
-	scroll.Summary = summary
+	local countTexts = {}
+	for i = 1, #ns.ROLE_ORDER + 2 do
+		countTexts[i] = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+		countTexts[i]:SetJustifyH("LEFT")
+	end
+	scroll.Counts = countTexts
+	-- The counts' widths are measured on text of its own, never seen, in the same font.
+	local measure = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+	measure:SetAlpha(0)
+	measure:SetPoint("TOPLEFT")
+	-- The summary as it reads, for the tests.
+	function scroll.SummaryText()
+		local shown = {}
+		for _, count in ipairs(countTexts) do
+			local text = count:IsShown() and count:GetText()
+			if text and text ~= "" then shown[#shown + 1] = text end
+		end
+		return table.concat(shown, "   ")
+	end
 	-- Officers inspect every raider whose role is unknown with this, in the top right; known roles are left alone.
 	local inspect = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
 	inspect:SetSize(INSPECT_BUTTON_WIDTH, 22)
@@ -1775,12 +1842,37 @@ local function CreateRaid(parent)
 		end
 		local parts = {}
 		for _, role in ipairs(ns.ROLE_ORDER) do
-			parts[#parts + 1] = CreateAtlasMarkup(ROLE_ICONS[role], ROLE_ICON_SIZE, ROLE_ICON_SIZE) .. " " .. (counts[role] or 0)
+			parts[#parts + 1] = { CreateAtlasMarkup(ROLE_ICONS[role], ROLE_ICON_SIZE, ROLE_ICON_SIZE) .. " ", counts[role] or 0 }
 		end
 		for _, state in ipairs({ "unchecked", "problem" }) do
-			if counts[state] then parts[#parts + 1] = QuestionMark(state) .. " " .. counts[state] end
+			if counts[state] then parts[#parts + 1] = { QuestionMark(state) .. " ", counts[state] } end
 		end
-		summary:SetText(groups[1] and table.concat(parts, "   ") or "")
+		-- A font still loading measures as nothing, so it's measured again next time, with a guess meanwhile.
+		local function Measure(key, text)
+			if raidMeasures[key] then return raidMeasures[key] end
+			measure:SetText(text)
+			local width = measure:GetStringWidth() or 0
+			if width > 0 then raidMeasures[key] = width end
+			return width > 0 and width or nil
+		end
+		local tenDigits = Measure("tenDigits", "0123456789")
+		local digit = tenDigits and tenDigits / 10 or 7
+		local gap = (Measure("spaced", "0  0") or 2 * digit + 7) - 2 * digit
+		local x = 2
+		for i, count in ipairs(countTexts) do
+			local part = groups[1] and parts[i]
+			count:SetShown(part ~= nil)
+			count:ClearAllPoints()
+			count:SetPoint("LEFT", panel, "TOPLEFT", x, -RAID_SUMMARY_HEIGHT / 2 + 2)
+			if part then
+				local prefix, number = part[1], tostring(part[2])
+				local prefixWidth = (Measure(prefix, prefix .. "0123456789") or ROLE_ICON_SIZE + 4 + 10 * digit) - 10 * digit
+				x = x + prefixWidth + #number * digit + gap
+				count:SetText(prefix .. number)
+			else
+				count:SetText("")
+			end
+		end
 		local officer = AsOfficer()
 		inspect:SetShown(officer and groups[1] ~= nil)
 		inspect:SetText(ns.IsSweeping() and L.RAID_INSPECTING_BUTTON or L.RAID_INSPECT_UNKNOWN)
@@ -1979,6 +2071,22 @@ local function Create()
 	frame.Dragger, frame.Sizer = dragger, sizer
 	table.insert(UISpecialFrames, "PitifulLootFrame")
 	frame:SetTitle("Pitiful Loot")
+	-- The template's title room starts after the portrait but ends at the close button, so its title sits right of the
+	-- window's middle. The title gets the close button's margin on both sides instead, centring it on the window, at the
+	-- template's own height.
+	local container, titleText = frame.TitleContainer, frame.TitleContainer.TitleText
+	local leftX, rightX
+	for i = 1, container:GetNumPoints() do
+		local point, _, _, x = container:GetPoint(i)
+		if point == "TOPLEFT" then leftX = x elseif point == "TOPRIGHT" then rightX = x end
+	end
+	local _, _, _, _, textY = titleText:GetPoint(1)
+	if type(leftX) == "number" and type(rightX) == "number" then
+		titleText:ClearAllPoints()
+		titleText:SetPoint("TOPLEFT", container, "TOPLEFT", -rightX - leftX, textY or -5)
+		titleText:SetPoint("TOPRIGHT", container, "TOPRIGHT", 0, textY or -5)
+		titleText:SetJustifyH("CENTER")
+	end
 
 	-- The Who list's layout: a stone header over the group finder background, framed by the inside border.
 	local background = Texture(frame, "BACKGROUND", "groupfinder-background", 1)
@@ -2092,11 +2200,13 @@ local function Create()
 
 	-- The list, with the minimal scroll bar the base game's lists use.
 	frame.ScrollBox = CreateFrame("Frame", nil, frame, "WowScrollBoxList")
-	frame.ScrollBox:SetPoint("TOPLEFT", 12, -(HEADER_BOTTOM + 8))
-	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -26, FOOTERS.officer.list)
+	frame.ScrollBox:SetPoint("TOPLEFT", LIST_LEFT, -(HEADER_BOTTOM + 8))
+	frame.ScrollBox:SetPoint("BOTTOMRIGHT", -LIST_RIGHT, FOOTERS.officer.list)
 	frame.ScrollBar = CreateFrame("EventFrame", nil, frame, "MinimalScrollBar")
-	frame.ScrollBar:SetPoint("TOPLEFT", frame.ScrollBox, "TOPRIGHT", 5, -4)
-	frame.ScrollBar:SetPoint("BOTTOMLEFT", frame.ScrollBox, "BOTTOMRIGHT", 5, -1)
+	-- Where the Raid and Options tabs' bars are: the list ends 4 further right than their panels, and 4 higher.
+	frame.ScrollBar:SetPoint("TOPLEFT", frame.ScrollBox, "TOPRIGHT", SCROLL_BAR_GAP - 4, -4)
+	frame.ScrollBar:SetPoint("BOTTOMLEFT", frame.ScrollBox, "BOTTOMRIGHT", SCROLL_BAR_GAP - 4, -SCROLL_BAR_DROP)
+	WithoutArrows(frame.ScrollBar)
 	-- Headers are CheckButtons and rows Buttons, so the list keeps a separate pool of each.
 	local scrollView = CreateScrollBoxListLinearView(0, 0, 0, 0, ROW_SPACING)
 	scrollView:SetElementExtentCalculator(function(_, line)
@@ -2148,11 +2258,12 @@ local function Create()
 	resize:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	frame.Resize = resize
 	frame.Empty = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-	frame.Empty:SetPoint("TOP", frame.ScrollBox, "TOP", 0, -24)
+	-- An empty tab's text, and the way to the tutorial, centred on the window rather than on the list.
+	frame.Empty:SetPoint("TOP", frame.ScrollBox, "TOP", LIST_TO_MIDDLE, -24)
 	frame.Empty:SetWidth(WIDTH - 60)
 	frame.Empty:SetTextColor(GREY.r, GREY.g, GREY.b)
 	local tryTest = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-	tryTest:SetPoint("CENTER", frame.ScrollBox, "CENTER")
+	tryTest:SetPoint("CENTER", frame.ScrollBox, "CENTER", LIST_TO_MIDDLE, 0)
 	tryTest:SetText(L.EMPTY_TRY_TEST_BUTTON)
 	tryTest:SetSize(TextWidth(tryTest:GetFontString()) + 40, 22)
 	local tryText = tryTest:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -2311,6 +2422,7 @@ end
 -- The queue's numbers set their font themselves; the rest of the text follows the font objects (Fonts.lua).
 ns.Listen("FONT_CHANGED", function()
 	queueFont.version = queueFont.version + 1
+	raidMeasures = {} -- the Raid tab's counts are measured again too
 	-- The seconds' digits are measured again in the new font.
 	digitWidth = nil
 	if frame then frame.Seconds.digits = nil end

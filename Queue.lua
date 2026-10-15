@@ -2,7 +2,7 @@ local _, ns = ...
 
 -- The writer's queue (5.2): Loot tab entries waiting for the roll under way, in the order they're to roll. Clicking an
 -- item while there's a roll under way queues it, or takes it back out, and a boss's dice button queues its loot. Each
--- starts a moment after the roll before it is awarded, disenchanted, kept to sell or cancelled, just as if the writer
+-- starts a moment after the roll before it is awarded, disenchanted, auctioned or cancelled, just as if the writer
 -- had started it, so raid chat hears nothing new; that moment counts as the roll still being under way. Whatever would
 -- hold the writer up holds the queue up too: a tie, a roll waiting for Award, one no one rolled on. Clear Queue empties
 -- it. It runs in the background: a roll it starts, Roll all's first included, opens the Roll tab only if the writer

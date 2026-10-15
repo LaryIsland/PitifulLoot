@@ -85,8 +85,16 @@ local TEXT = {
 }
 
 local WIDTH = 360
-local PADDING = 24 -- from the frame's edge to its contents
-local CONTENT = WIDTH - 2 * PADDING
+-- The frame's border is thicker on the left than the right (where the game's panels with it have their background),
+-- so the contents are as far inside it on both sides: PAD_LEFT and PAD_RIGHT from the frame's edges.
+local BORDER_LEFT, BORDER_RIGHT, BORDER_BOTTOM = 6, 2, 2
+local INSIDE = 20 -- from the border to the contents, on every side
+local PAD_LEFT, PAD_RIGHT = BORDER_LEFT + INSIDE, BORDER_RIGHT + INSIDE
+local CONTENT = WIDTH - PAD_LEFT - PAD_RIGHT
+-- With more steps than the screen has room for, the menu widens by its scroll bar and the gap before it, the contents
+-- staying as they are; with room for them all, there's no bar and no room for one.
+local BAR_WIDTH, BAR_GAP = 8, 12
+local SCROLL_BOTTOM = 4 -- the scrolling area's bottom, above the frame's
 local INDENT = 12 -- a step's line and controls, from its title
 local BUTTON_WIDTH, BUTTON_HEIGHT, GAP = 124, 22, 8
 local START_OVER_WIDTH = 96 -- narrower, to leave room for the page choice beside it
@@ -504,7 +512,7 @@ local function BuildPage(scroll, specs, descColor)
 		line:SetWidth(CONTENT - INDENT)
 		line:SetJustifyH("LEFT")
 		if color then line:SetTextColor(color.r, color.g, color.b) end
-		line:SetPoint("TOPLEFT", PADDING + INDENT, y)
+		line:SetPoint("TOPLEFT", PAD_LEFT + INDENT, y)
 		line:SetText(text)
 		y = y - line:GetStringHeight() - 6
 		return line
@@ -514,11 +522,11 @@ local function BuildPage(scroll, specs, descColor)
 		local step = { spec = spec }
 		local top = y
 		step.Title = body:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-		step.Title:SetPoint("TOPLEFT", PADDING, y)
+		step.Title:SetPoint("TOPLEFT", PAD_LEFT, y)
 		step.Title:SetText(spec.title)
 		step.Check = body:CreateTexture(nil, "ARTWORK")
 		step.Check:SetAtlas(CHECKMARK, true)
-		step.Check:SetPoint("RIGHT", body, "TOPRIGHT", -PADDING, y - 6)
+		step.Check:SetPoint("RIGHT", body, "TOPRIGHT", -PAD_RIGHT, y - 6)
 		y = y - 18
 		local function Description()
 			if (spec.tip or "") ~= "" then step.Text = Text(spec.tip, descColor) end
@@ -535,7 +543,7 @@ local function BuildPage(scroll, specs, descColor)
 				if previous then
 					region:SetPoint("LEFT", previous, "RIGHT", GAP + offset[1], 0)
 				else
-					region:SetPoint("TOPLEFT", PADDING + INDENT + offset[1], y + offset[2])
+					region:SetPoint("TOPLEFT", PAD_LEFT + INDENT + offset[1], y + offset[2])
 				end
 				previous = control.widget
 				height = math.max(height, ROW_HEIGHTS[control.kind])
@@ -545,13 +553,15 @@ local function BuildPage(scroll, specs, descColor)
 		end
 		step.Highlight = body:CreateTexture(nil, "BACKGROUND")
 		step.Highlight:SetColorTexture(1, 1, 1, CURRENT_ALPHA)
-		step.Highlight:SetPoint("TOPLEFT", body, "TOPLEFT", PADDING - CURRENT_MARGIN, top + CURRENT_MARGIN / 2)
-		step.Highlight:SetPoint("BOTTOMRIGHT", body, "TOPRIGHT", CURRENT_MARGIN - PADDING, y + 6 - CURRENT_MARGIN / 2)
+		step.Highlight:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_LEFT - CURRENT_MARGIN, top + CURRENT_MARGIN / 2)
+		step.Highlight:SetPoint("BOTTOMRIGHT", body, "TOPRIGHT", CURRENT_MARGIN - PAD_RIGHT, y + 6 - CURRENT_MARGIN / 2)
 		step.Highlight:Hide()
 		y = y - STEP_GAP + 6
 		built[#built + 1] = step
 	end
-	local height = -y + PADDING - STEP_GAP
+	-- The last step's last row ends STEP_GAP above y; the body ends far enough below it for the frame's edge to be
+	-- INSIDE below the border, as at the sides.
+	local height = -(y + STEP_GAP) + INSIDE + BORDER_BOTTOM - SCROLL_BOTTOM
 	body:SetHeight(height)
 	return body, height, built
 end
@@ -567,7 +577,9 @@ local function ShowPage(key)
 	menu.Scroll:SetVerticalScroll(0)
 	local room = (UIParent:GetHeight() or 0) - SCREEN_MARGIN - menu.headerHeight
 	if room < MIN_BODY then room = shown.height end
-	menu:SetHeight(TITLE_BAR + menu.headerHeight + math.min(shown.height, room) + 4)
+	local scrolls = shown.height > room
+	menu:SetWidth(WIDTH + (scrolls and BAR_GAP + BAR_WIDTH or 0))
+	menu:SetHeight(TITLE_BAR + menu.headerHeight + math.min(shown.height, room) + SCROLL_BOTTOM)
 	ns.Test.SetRaiderPage(key == "raider")
 	Refresh()
 end
@@ -623,7 +635,7 @@ local function Create()
 	local intro = menu:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 	intro:SetWidth(CONTENT)
 	intro:SetJustifyH("LEFT")
-	intro:SetPoint("TOPLEFT", PADDING, y)
+	intro:SetPoint("TOPLEFT", PAD_LEFT, y)
 	intro:SetText(TEXT.INTRO)
 	y = y - intro:GetStringHeight() - 8
 	local testMode = {
@@ -632,11 +644,11 @@ local function Create()
 		Blocked = function() return ns.TestModeBlockedText() end,
 		Click = function(checked) if checked then ns.Test.On() else ns.Test.Off() end end }
 	menu.TestMode = Checkbox(menu, testMode)
-	menu.TestMode:SetPoint("TOPLEFT", PADDING - 4, y + 4)
+	menu.TestMode:SetPoint("TOPLEFT", PAD_LEFT - 4, y + 4)
 	controls[#controls + 1] = testMode
 	local startOver = { key = "startOver", kind = "button", title = TEXT.START_OVER, tip = TEXT.START_OVER_TIP,
 		width = START_OVER_WIDTH, Click = function() ns.Test.Reset() end }
-	Button(menu, startOver):SetPoint("TOPRIGHT", -PADDING, y)
+	Button(menu, startOver):SetPoint("TOPRIGHT", menu, "TOPLEFT", WIDTH - PAD_RIGHT, y)
 	controls[#controls + 1] = startOver
 	-- The page, as the game's own dropdowns are: its tooltip added to, rather than in place of, the dropdown's own.
 	local pageChoice = CreateFrame("DropdownButton", nil, menu, "WowStyle1DropdownTemplate")
@@ -656,11 +668,14 @@ local function Create()
 	-- The steps scroll, if the screen's too short for them all.
 	local scroll = CreateFrame("ScrollFrame", nil, menu, "ScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 0, y)
-	scroll:SetPoint("BOTTOMRIGHT", 0, 4)
+	scroll:SetPoint("BOTTOMRIGHT", 0, SCROLL_BOTTOM)
+	-- Its bar, without arrows, in the room the menu makes for it when there's scrolling to do, as far in from the
+	-- frame's right as the contents are; gone entirely when there isn't.
 	scroll.ScrollBar:SetHideIfUnscrollable(true)
 	scroll.ScrollBar:ClearAllPoints()
-	scroll.ScrollBar:SetPoint("TOPRIGHT", scroll, "TOPRIGHT", -8, -6)
-	scroll.ScrollBar:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", -8, 6)
+	scroll.ScrollBar:SetPoint("TOPRIGHT", scroll, "TOPRIGHT", -PAD_RIGHT, -6)
+	scroll.ScrollBar:SetPoint("BOTTOMRIGHT", scroll, "BOTTOMRIGHT", -PAD_RIGHT, 6)
+	ns.ScrollBarWithoutArrows(scroll.ScrollBar)
 	-- It drags the window, as the rest of the window does.
 	scroll:EnableMouse(true)
 	scroll:RegisterForDrag("LeftButton")

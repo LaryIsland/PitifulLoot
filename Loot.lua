@@ -226,7 +226,7 @@ ns.Listen("ROLL_EVENT", function(kind, m)
 	ns.Fire("LOOT_CHANGED")
 end)
 
--- Whether an item's been dealt with: awarded in full, disenchanted, or kept to sell.
+-- Whether an item's been dealt with: awarded in full, disenchanted, or auctioned.
 function ns.LootDone(entry)
 	return entry.status == "awarded" or entry.status == "disenchanted" or entry.status == "kept"
 end

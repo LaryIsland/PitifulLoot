@@ -63,9 +63,10 @@ local function Done(handover, tell)
 	ns.Fire("LOOT_CHANGED")
 end
 
--- An officer marking a copy as handed over, from the window: the trade wasn't seen, or it ran out of time.
+-- An officer marking a copy as handed over, from the window: the trade wasn't seen, or it ran out of time. A winner
+-- can mark their own (test mode's trades do, as the game's would on going through).
 function ns.MarkTraded(sid, id)
-	if not ns.IsOfficer(ns.PlayerName()) then return end
+	if not ns.IsOfficer(ns.PlayerName()) and id ~= UnitGUID("player") then return end
 	local handover = EachHandover(function(h) return not h.done and h.sid == sid and h.id == id end)
 	if handover then Done(handover, true) end
 end
@@ -160,13 +161,17 @@ end
 
 -- Opens a trade with a winner from the Loot tab, which puts in what you hold for them once it's open.
 -- The winner can be anyone in your group, or whoever you're targeting.
-function ns.OfferTrade(id)
-	local member = ns.GroupMember(id)
-	local unit = member and member.unit or (UnitGUID("target") == id and "target") or nil
-	if not unit then return ns.Print(ns.L.MSG_TRADE_NOT_IN_RAID:format(ns.ColoredName(id))) end
+-- `who` is a GUID or a name: the winner, for an officer handing a copy over, or whoever holds your copy, for you.
+function ns.OfferTrade(who)
+	local id = who
+	local member = ns.GroupMember(who)
+	if member then id = member.guid end
+	local target = UnitGUID("target")
+	local unit = member and member.unit or (canaccessvalue(target) and target == id and "target") or nil
+	if not unit then return ns.Print(ns.L.MSG_TRADE_NOT_IN_RAID:format(ns.ColoredName(who))) end
 	if trade and not trade.closed and trade.partner == id then return FillTrade() end
 	if not CheckInteractDistance(unit, 2) then
-		return ns.Print(ns.L.MSG_TRADE_TOO_FAR:format(ns.ColoredName(id)))
+		return ns.Print(ns.L.MSG_TRADE_TOO_FAR:format(ns.ColoredName(who)))
 	end
 	InitiateTrade(unit)
 end

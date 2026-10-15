@@ -741,7 +741,7 @@ function test.probe(args)
 	Add("Your spec index", Text(index))
 	Add("Your spec info", index and Try(C_SpecializationInfo.GetSpecializationInfo, index) or "-")
 	Add("Specs for your class", Try(C_SpecializationInfo.GetNumSpecializationsForClassID, select(3, UnitClass("player"))))
-	Add("Spec selection enabled", Try(C_SpecializationInfo.IsSpecSelectionEnabled))
+	Add("Spec selection enabled", Try(C_SpecializationInfo.IsSpecSelectionEnabled, select(3, UnitClass("player"))))
 	Add("Your assigned role", Try(UnitGroupRolesAssigned, "player"))
 	-- The talents the role guess reads, from the trait tree: how many could be read, and those taken.
 	local function Talents(inspect)
@@ -1080,17 +1080,27 @@ end
 -- Roles set by hand on made-up raiders go with them, as the next raid's are the same players again.
 -- Trading with a made-up raider, as if the raid were real: the trade goes through at once, handing over every copy
 -- you owe them, as a finished trade does (Trades.lua).
-function ns.OfferTrade(id)
-	local raider = raiders and raiders[id]
-	if not raider then return real.OfferTrade(id) end
-	local items = {}
+-- Trading with a made-up raider goes through at once: the copies you hold for them go to them, or (the made-up officer
+-- on the raider page holding yours) yours come to you.
+function ns.OfferTrade(who)
+	local raider = raiders and raiders[who]
+	for _, each in ipairs(raider and {} or raiders or {}) do
+		if ns.SameName(each.name, who) then raider = each end
+	end
+	if not raider then return real.OfferTrade(who) end
+	local me, given, got = UnitGUID("player"), {}, {}
 	for _, pending in ipairs(ns.PendingTrades()) do
-		if pending.id == id then
-			items[#items + 1] = ns.ItemLink(pending.item)
-			ns.MarkTraded(pending.sid, id)
+		if pending.id == raider.guid then
+			given[#given + 1] = ns.ItemLink(pending.item)
+			ns.MarkTraded(pending.sid, raider.guid)
+		elseif pending.id == me and pending.from and ns.SameName(pending.from, raider.name) then
+			got[#got + 1] = ns.ItemLink(pending.item)
+			ns.MarkTraded(pending.sid, me)
 		end
 	end
-	if items[1] then ns.Print(L.TEST_MSG_TRADED:format(table.concat(items, ", "), ns.ColoredName(id, raider.name))) end
+	local name = ns.ColoredName(raider.guid, raider.name)
+	if given[1] then ns.Print(L.TEST_MSG_TRADED:format(table.concat(given, ", "), name)) end
+	if got[1] then ns.Print(L.TEST_MSG_TRADED_FROM:format(name, table.concat(got, ", "))) end
 end
 
 function test.forgetRaiders()

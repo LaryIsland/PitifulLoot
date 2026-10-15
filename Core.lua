@@ -16,7 +16,7 @@ end
 local DEFAULTS = {
 	rollTime = 30,
 	rerollTime = 20,
-	minQuality = 4, -- epic
+	minQuality = 2, -- uncommon
 	announce = true, -- the writer's raid chat messages (5.3)
 	whisperRefusals = true, -- the writer whispers players without the addon whose roll didn't count
 	raidWarning = true, -- headlines as raid warnings, when the writer is leader or an assistant
